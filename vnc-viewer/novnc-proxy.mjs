@@ -4,14 +4,14 @@
  *
  * - Serves a custom viewer.html at /
  * - Serves noVNC static assets from NOVNC_DIR
- * - Proxies VNC WebSocket to upstream websockify
+ * - Bridges VNC WebSocket directly to x11vnc TCP (no websockify needed)
  * - Exposes CDP REST API endpoints (tabs, activate, screenshot)
  * - Auth: first request with ?token= sets an HttpOnly cookie;
  *   subsequent requests (module imports, assets, WS) use the cookie.
  *
  * Env vars:
  *   OPENCLAW_GATEWAY_TOKEN  - required auth token
- *   NOVNC_PORT              - websockify port (default 6080)
+ *   VNC_PORT                - x11vnc TCP port (default 5900)
  *   AUTH_PORT               - this proxy's listen port (default 6090)
  *   CDP_PORT                - Chrome DevTools Protocol port (default 18800)
  *   NOVNC_DIR               - noVNC static files directory
@@ -24,7 +24,7 @@ if (!TOKEN) {
   process.exit(1);
 }
 
-const NOVNC_PORT = parseInt(process.env.NOVNC_PORT || '6080');
+const VNC_PORT = parseInt(process.env.VNC_PORT || '5900');
 const AUTH_PORT = parseInt(process.env.AUTH_PORT || '6090');
 const CDP_PORT = parseInt(process.env.CDP_PORT || '18800');
 const NOVNC_DIR = process.env.NOVNC_DIR || '/usr/share/novnc';
@@ -186,49 +186,61 @@ const server = Bun.serve({
     return new Response('Not found', { status: 404 });
   },
 
-  // ── WebSocket handler (VNC relay) ─────────────────────────────
+  // ── WebSocket handler (direct TCP bridge to x11vnc) ──────────
   websocket: {
-    open(ws) {
-      const upstream = new WebSocket(`ws://127.0.0.1:${NOVNC_PORT}`);
-      upstream.binaryType = 'arraybuffer';
-
+    async open(ws) {
       const queue = [];
-      ws.data.upstream = upstream;
       ws.data.queue = queue;
       ws.data.ready = false;
+      ws.data.upstream = null;
 
-      upstream.onopen = () => {
-        ws.data.ready = true;
-        for (const msg of queue) upstream.send(msg);
-        queue.length = 0;
-      };
-      upstream.onmessage = (e) => {
-        try { ws.send(e.data); } catch { /* client gone */ }
-      };
-      upstream.onclose = () => {
-        try { ws.close(); } catch { /* already closed */ }
-      };
-      upstream.onerror = () => {
-        try { ws.close(); } catch { /* already closed */ }
-      };
+      try {
+        const upstream = await Bun.connect({
+          hostname: '127.0.0.1',
+          port: VNC_PORT,
+          socket: {
+            data(_sock, data) {
+              try { ws.send(data); } catch { /* client gone */ }
+            },
+            close() {
+              try { ws.close(); } catch { /* already closed */ }
+            },
+            error() {
+              try { ws.close(); } catch { /* already closed */ }
+            },
+            open(sock) {
+              ws.data.upstream = sock;
+              ws.data.ready = true;
+              for (const msg of queue) sock.write(new Uint8Array(msg));
+              queue.length = 0;
+            },
+          },
+        });
+      } catch {
+        try { ws.close(); } catch { /* ok */ }
+      }
     },
 
     message(ws, message) {
-      if (ws.data.ready) {
-        try { ws.data.upstream.send(message); } catch { /* upstream gone */ }
+      if (ws.data.ready && ws.data.upstream) {
+        try {
+          ws.data.upstream.write(
+            message instanceof ArrayBuffer ? new Uint8Array(message) : message,
+          );
+        } catch { /* upstream gone */ }
       } else {
         ws.data.queue.push(message);
       }
     },
 
     close(ws) {
-      try { ws.data.upstream?.close(); } catch { /* ok */ }
+      try { ws.data.upstream?.end(); } catch { /* ok */ }
     },
 
     perMessageDeflate: false,
   },
 });
 
-console.log(`✅ Enhanced VNC proxy (Bun) on :${server.port}`);
-console.log(`   noVNC → :${NOVNC_PORT} | CDP → :${CDP_PORT}`);
+console.log(`✅ VNC proxy (Bun) on :${server.port}`);
+console.log(`   VNC → :${VNC_PORT} (direct TCP) | CDP → :${CDP_PORT}`);
 console.log(`   Viewer: http://YOUR_IP:${server.port}/?token=${TOKEN.slice(0, 4)}...`);

@@ -56,7 +56,8 @@ Configuration is loaded from .env (see .env.example).
 
 Options:
     -u, --user USER         SSH user (overrides .env)
-    -t, --tunnel            Create SSH tunnel (gateway + VNC)
+    -t, --tunnel            Create SSH tunnel (gateway + VNC browser)
+    -v, --vnc               Direct VNC tunnel (fastest, needs VNC client)
     -r, --resume [SESSION]  Resume/attach to tmux session (default: openclaw)
     -l, --list              List all remote tmux sessions
     -k, --kill SESSION      Kill a specific tmux session
@@ -66,7 +67,8 @@ Options:
 
 Examples:
     $0                          # SSH into the server
-    $0 --tunnel                 # Tunnel gateway (18789) + VNC (6090)
+    $0 --tunnel                 # Tunnel gateway (18789) + VNC browser (6090)
+    $0 --vnc                    # Direct VNC tunnel (use native VNC client)
     $0 --deploy                 # Deploy VNC viewer to remote
     $0 --resume                 # Attach to tmux session 'openclaw'
     $0 --resume mysession       # Attach to tmux session 'mysession'
@@ -78,6 +80,7 @@ EOF
 
 # Parse arguments
 TUNNEL_MODE=false
+VNC_MODE=false
 RESUME_MODE=false
 LIST_MODE=false
 INIT_TMUX=false
@@ -93,6 +96,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -t|--tunnel)
             TUNNEL_MODE=true
+            shift
+            ;;
+        -v|--vnc)
+            VNC_MODE=true
             shift
             ;;
         -r|--resume)
@@ -325,7 +332,7 @@ Requires=xvfb.service
 Type=simple
 User='"$SSH_USER"'
 Environment=DISPLAY=:99
-ExecStart=/usr/bin/x11vnc -display :99 -nopw -forever -shared -rfbport 5900 -ncache 10
+ExecStart=/usr/bin/x11vnc -display :99 -nopw -forever -shared -rfbport 5900 -scale 1/2 -threads -noxdamage -defer 10 -wait 5 -nap -cursor arrow
 Restart=always
 RestartSec=3
 
@@ -365,13 +372,14 @@ EOF
         sudo tee /etc/systemd/system/openclaw-novnc-proxy.service >/dev/null <<EOF
 [Unit]
 Description=OpenClaw noVNC Auth Proxy
-After=websockify.service
-Requires=websockify.service
+After=x11vnc.service
+Requires=x11vnc.service
 
 [Service]
 Type=simple
 User='"$SSH_USER"'
 Environment=OPENCLAW_GATEWAY_TOKEN=$TOKEN
+Environment=VNC_PORT=5900
 ExecStart=$BUN_PATH $REMOTE_DIR/novnc-proxy.mjs
 Restart=always
 RestartSec=3
@@ -422,6 +430,20 @@ EOF
     '
     echo ""
     echo "Done. Hard-refresh the viewer in your browser (Cmd+Shift+R)."
+    exit 0
+fi
+
+# Handle direct VNC mode
+if [[ "$VNC_MODE" == true ]]; then
+    echo "Direct VNC tunnel: localhost:5900 -> $IP:5900"
+    echo ""
+    echo "  Connect your VNC client to: localhost:5900"
+    echo ""
+    echo "  macOS:    open vnc://localhost:5900"
+    echo "  TigerVNC: vncviewer localhost:5900"
+    echo ""
+    echo "Tunnel active. Press Ctrl+C to close."
+    ssh "${SSH_OPTS[@]}" -N -L 5900:127.0.0.1:5900 "$SSH_USER@$IP"
     exit 0
 fi
 

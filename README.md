@@ -47,7 +47,7 @@ Plain SSH connection to the remote server.
 ./connect.sh -u ec2-user  # Override SSH user
 ```
 
-### `./connect.sh --tunnel` -- SSH tunnel
+### `./connect.sh --tunnel` -- SSH tunnel (browser)
 
 Creates an SSH tunnel forwarding two ports to localhost:
 
@@ -62,19 +62,28 @@ Prints clickable URLs with the gateway token. Open the VNC URL in your browser t
 # VNC:     http://localhost:6090/?token=...
 ```
 
+### `./connect.sh --vnc` -- Direct VNC tunnel (fastest)
+
+Tunnels VNC port 5900 directly over SSH. Use with a native VNC client for the best performance -- no WebSocket overhead, no proxy layers.
+
+```bash
+./connect.sh --vnc
+# Then connect your VNC client to localhost:5900
+# macOS: open vnc://localhost:5900
+```
+
 ### `./connect.sh --deploy` -- Deploy VNC stack
 
 Deploys and configures the full VNC viewer stack on the remote server. Idempotent -- skips what's already set up, only restarts the proxy when files change.
 
 What it does:
 
-1. **Dependencies** -- installs `bun`, `x11vnc`, `websockify`, `novnc` if missing
+1. **Dependencies** -- installs `bun`, `x11vnc`, `novnc` if missing
 2. **Files** -- uploads `viewer.html` and `novnc-proxy.mjs`
-3. **Services** -- creates systemd services (if missing) for the full stack:
+3. **Services** -- creates systemd services (if missing) for the stack:
    - `xvfb.service` -- virtual X display (1920x1080)
-   - `x11vnc.service` -- VNC server on the virtual display
-   - `websockify.service` -- WebSocket bridge (port 6080)
-   - `openclaw-novnc-proxy.service` -- authenticated noVNC proxy (port 6090, Bun)
+   - `x11vnc.service` -- VNC server with server-side scaling
+   - `openclaw-novnc-proxy.service` -- auth proxy (Bun, bridges WebSocket to VNC TCP directly)
 
 All services are enabled for auto-start on boot.
 
@@ -99,21 +108,26 @@ Attach to (or create) a tmux session on the remote server. Optimized for low-lat
 ```
 Local machine                          Remote server (AWS)
 --------------                         -------------------
+
+Browser path (--tunnel):
 browser ──> localhost:6090 ─── SSH ───> novnc-proxy (Bun, :6090)
-                tunnel                      │
-                                       websockify (:6080)
-                                            │
+                tunnel                      │ direct TCP
                                        x11vnc (:5900)
                                             │
                                        Xvfb (:99, 1920x1080)
                                             │
                                        Chromium (headless)
+
+Native VNC path (--vnc):
+VNC client ──> localhost:5900 ── SSH ──> x11vnc (:5900)
+                  tunnel                     │
+                                        Xvfb (:99)
 ```
 
 ### VNC viewer (`vnc-viewer/`)
 
-- **`novnc-proxy.mjs`** -- Bun server that authenticates via `OPENCLAW_GATEWAY_TOKEN`, serves `viewer.html`, and proxies WebSocket VNC traffic to websockify.
-- **`viewer.html`** -- Minimal noVNC client. Connects to the VNC stream, auto-reconnects with backoff if the server is down. No tab selector (the remote browser tabs are visible in the VNC stream itself).
+- **`novnc-proxy.mjs`** -- Bun server that authenticates via gateway token, serves `viewer.html`, and bridges WebSocket traffic directly to x11vnc over TCP (no websockify needed).
+- **`viewer.html`** -- Minimal noVNC client. Auto-scales to fit the viewport, auto-reconnects with backoff if the server is down.
 
 ## Files
 
@@ -126,6 +140,6 @@ browser ──> localhost:6090 ─── SSH ───> novnc-proxy (Bun, :6090)
 ├── cred.pem            # SSH key (git-ignored)
 ├── README.md
 └── vnc-viewer/
-    ├── novnc-proxy.mjs # Auth proxy server (Bun)
+    ├── novnc-proxy.mjs # Auth proxy + WS-to-TCP bridge (Bun)
     └── viewer.html     # noVNC browser client
 ```
