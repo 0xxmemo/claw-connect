@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remote Browser</title>
+  <style>
+    :root {
+      --bg-primary: #0f1117;
+      --bg-secondary: #1a1d27;
+      --bg-tertiary: #252830;
+      --bg-hover: #2f323c;
+      --bg-active: #383b46;
+      --border: #2e3140;
+      --text-primary: #e4e6eb;
+      --text-secondary: #8b8fa3;
+      --text-muted: #5c6072;
+      --accent: #6c8aff;
+      --accent-dim: #4a62c4;
+      --success: #4ade80;
+      --warning: #fbbf24;
+      --danger: #f87171;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif; background: var(--bg-primary); color: var(--text-primary); }
+
+    /* Layout */
+    #app { display: flex; flex-direction: column; height: 100vh; }
+
+    /* Toolbar */
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      min-height: 36px;
+    }
+
+    .toolbar-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      border: none;
+      background: transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      transition: all 0.15s;
+      font-size: 14px;
+    }
+    .toolbar-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .toolbar-btn:active { background: var(--bg-active); }
+
+    .toolbar-separator {
+      width: 1px;
+      height: 20px;
+      background: var(--border);
+    }
+
+    /* Status indicators */
+    #status-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--danger);
+      transition: background 0.3s;
+    }
+    .status-dot.connected { background: var(--success); }
+    .status-dot.connecting { background: var(--warning); animation: pulse 1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    #status-text { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+
+    /* VNC Screen — no flexbox centering; noVNC manages its own layout.
+       Flexbox centering breaks mouse coordinate mapping. */
+    #screen-container {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+      background: var(--bg-primary);
+    }
+
+    /* Connection overlay */
+    #connect-overlay {
+      position: absolute;
+      inset: 0;
+      background: var(--bg-primary);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      z-index: 10;
+    }
+    #connect-overlay.hidden { display: none; }
+    .connect-spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .connect-text { font-size: 14px; color: var(--text-secondary); }
+
+
+  </style>
+</head>
+<body>
+  <div id="app">
+    <!-- Toolbar -->
+    <div id="toolbar">
+      <div id="status-group">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-text">Connecting…</span>
+      </div>
+
+      <div style="flex:1"></div>
+
+      <button class="toolbar-btn" id="btn-fullscreen" title="Fullscreen">&#x26F6;</button>
+    </div>
+
+    <!-- VNC Screen -->
+    <div id="screen-container">
+      <div id="connect-overlay">
+        <div class="connect-spinner"></div>
+        <div class="connect-text">Connecting to remote display…</div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    // ── State ──
+    let RFB = null;
+    let rfb = null;
+    let retryDelay = 2000; // start at 2s, backs off
+
+    // ── Auth token from URL ──
+    const params = new URLSearchParams(location.search);
+    const token = params.get('token') || '';
+
+    // ── Elements ──
+    const statusDot = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const screenContainer = document.getElementById('screen-container');
+    const connectOverlay = document.getElementById('connect-overlay');
+    const connectText = connectOverlay.querySelector('.connect-text');
+
+    // ── Load noVNC (resilient) ──
+    async function loadRFB() {
+      if (RFB) return true;
+      try {
+        const mod = await import('./core/rfb.js');
+        RFB = mod.default;
+        return true;
+      } catch (err) {
+        console.warn('noVNC module not available, will retry:', err.message);
+        return false;
+      }
+    }
+
+    // ── VNC Connection (resilient) ──
+    async function connectVNC() {
+      statusDot.className = 'status-dot connecting';
+      statusText.textContent = 'Connecting…';
+      connectText.textContent = 'Connecting to remote display…';
+      connectOverlay.classList.remove('hidden');
+
+      // Try to load the RFB module first
+      const loaded = await loadRFB();
+      if (!loaded) {
+        statusDot.className = 'status-dot';
+        statusText.textContent = 'VNC unavailable';
+        connectText.textContent = 'VNC server not available. Retrying…';
+        retryDelay = Math.min(retryDelay * 1.5, 15000);
+        setTimeout(connectVNC, retryDelay);
+        return;
+      }
+
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${location.host}/websockify?token=${token}`;
+
+      try {
+        // Clean up previous RFB instance if any
+        if (rfb) {
+          try { rfb.disconnect(); } catch { /* ok */ }
+          rfb = null;
+        }
+
+        rfb = new RFB(screenContainer, wsUrl, {
+          scaleViewport: true,
+          resizeSession: false,
+          clipViewport: true,
+          showDotCursor: true,
+          qualityLevel: 6,
+          compressionLevel: 2,
+        });
+
+        rfb.addEventListener('connect', () => {
+          retryDelay = 2000; // reset backoff on success
+          statusDot.className = 'status-dot connected';
+          statusText.textContent = 'Connected';
+          connectOverlay.classList.add('hidden');
+        });
+
+        rfb.addEventListener('disconnect', (e) => {
+          rfb = null;
+          statusDot.className = 'status-dot';
+          const msg = e.detail.clean ? 'Disconnected' : 'Connection lost';
+          statusText.textContent = msg;
+          connectText.textContent = `${msg}. Reconnecting…`;
+          connectOverlay.classList.remove('hidden');
+          retryDelay = Math.min(retryDelay * 1.5, 15000);
+          setTimeout(connectVNC, retryDelay);
+        });
+
+      } catch (err) {
+        console.warn('VNC connection error:', err.message);
+        rfb = null;
+        statusDot.className = 'status-dot';
+        statusText.textContent = 'Connection failed';
+        connectText.textContent = 'Could not connect. Retrying…';
+        retryDelay = Math.min(retryDelay * 1.5, 15000);
+        setTimeout(connectVNC, retryDelay);
+      }
+    }
+
+    // ── Toolbar buttons ──
+    document.getElementById('btn-fullscreen').addEventListener('click', () => {
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      } else {
+        document.documentElement.requestFullscreen();
+      }
+    });
+
+    // ── Init ──
+    connectVNC();
+  </script>
+</body>
+</html>
