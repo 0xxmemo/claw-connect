@@ -10,9 +10,14 @@ Remote browser management CLI. SSH into a server running a headless Chromium bro
 
 One-liner — resolves the latest release, clones to `~/.claw-connect`, symlinks to PATH, sets up shell completions:
 
+<div style="position:relative">
+
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/0xxmemo/claw-connect/main/install.sh)
+curl -fsSL https://raw.githubusercontent.com/0xxmemo/claw-connect/main/install.sh | bash
 ```
+
+<a href="#" onclick="navigator.clipboard.writeText('curl -fsSL https://raw.githubusercontent.com/0xxmemo/claw-connect/main/install.sh | bash');this.textContent='✓ Copied';setTimeout(()=>this.textContent='📋 Copy',1500);return false" style="position:absolute;top:6px;right:6px;padding:2px 8px;font-size:12px;text-decoration:none;cursor:pointer;background:#1a1d27;border:1px solid #2e3140;border-radius:4px;color:#e4e6eb">📋 Copy</a>
+</div>
 
 Or manually:
 
