@@ -1,0 +1,66 @@
+#compdef claw-connect
+
+# zsh completions for claw-connect
+
+_claw_connect_profiles() {
+    local config_dir="$HOME/.config/claw-connect/profiles"
+    local -a profiles
+    if [[ -d "$config_dir" ]]; then
+        for dir in "$config_dir"/*(N/); do
+            [[ -f "$dir/config" ]] && profiles+=("$(basename "$dir")")
+        done
+    fi
+    _describe 'profile' profiles
+}
+
+_claw-connect() {
+    local -a commands flags
+
+    commands=(
+        'setup:Interactive setup wizard'
+        'profiles:List configured profiles'
+    )
+
+    flags=(
+        {-p,--profile}'[Use a named profile]:profile:_claw_connect_profiles'
+        {-t,--tunnel}'[Create SSH tunnel (gateway + VNC browser)]'
+        {-v,--vnc}'[Direct VNC tunnel (fastest, needs VNC client)]'
+        {-d,--deploy}'[Deploy VNC viewer & set up services on remote]'
+        {-r,--resume}'[Resume/attach to tmux session]:session name:'
+        {-l,--list}'[List all remote tmux sessions]'
+        {-k,--kill}'[Kill a specific tmux session]:session name:'
+        {-u,--user}'[Override SSH user]:username:'
+        '--init-tmux[Install optimized tmux config on remote]'
+        {-h,--help}'[Show help message]'
+    )
+
+    # If we're completing after "setup", complete profile names
+    if (( CURRENT >= 3 )) && [[ "${words[2]}" == "setup" ]]; then
+        _claw_connect_profiles
+        return
+    fi
+
+    _arguments -s \
+        '1: :->cmd_or_flag' \
+        '*:: :->args' && return
+
+    case $state in
+        cmd_or_flag)
+            _alternative \
+                'commands:command:_describe "command" commands' \
+                'flags:flag:_arguments $flags'
+            ;;
+        args)
+            case "${words[1]}" in
+                setup)
+                    _claw_connect_profiles
+                    ;;
+                *)
+                    _arguments $flags
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_claw-connect "$@"

@@ -1,19 +1,59 @@
+<p align="center">
+  <img src="https://xaixapi.com/images/openclaw-lobster.svg" width="120" alt="Claw Connect" />
+</p>
+
 # Claw Connect
 
-Remote browser management toolkit. SSH into an AWS instance running a headless Chromium browser, view it via VNC in your browser, and manage sessions over tmux.
+Remote browser management CLI. SSH into a server running a headless Chromium browser, view it via VNC in your browser, and manage sessions over tmux.
+
+## Install
+
+One-liner — resolves the latest release, clones to `~/.claw-connect`, symlinks to PATH, sets up shell completions:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/0xxmemo/claw-connect/main/install.sh)
+```
+
+Or manually:
+
+```bash
+git clone https://github.com/0xxmemo/claw-connect.git ~/.claw-connect
+~/.claw-connect/install.sh
+```
+
+The installer fetches the latest semver release tag from GitHub (e.g. `v1.2.0`) and checks out that version. Re-running the installer updates to the newest release.
+
+### Update
+
+```bash
+~/.claw-connect/install.sh
+```
+
+### Check version
+
+```bash
+claw-connect --version
+```
+
+### Uninstall
+
+```bash
+sudo rm -f /usr/local/bin/claw-connect
+rm -rf ~/.claw-connect ~/.config/claw-connect
+# Remove the "# claw-connect completions" block from your shell rc file
+```
 
 ## Quick start
 
 ```bash
-# 1. Copy and fill in your config
-cp .env.example .env
-# Edit .env with your server IP, SSH user, and PEM filename
+# 1. Interactive first-time setup
+claw-connect setup
 
 # 2. Deploy the VNC viewer stack to the remote server
-./connect.sh --deploy
+claw-connect --deploy
 
 # 3. Open the SSH tunnel
-./connect.sh --tunnel
+claw-connect --tunnel
 # Prints Gateway and VNC URLs — open the VNC URL in your browser
 ```
 
@@ -21,125 +61,120 @@ cp .env.example .env
 
 ### Prerequisites (local)
 
-- macOS or Linux with `ssh` and `scp`
-- A PEM key file for the remote server (default: `cred.pem`)
+- macOS or Linux with `ssh`, `scp`, and `git`
 
 ### Configuration
 
-All config lives in `.env` (git-ignored). Copy `.env.example` and fill in your values:
+Run `claw-connect setup` to create a profile interactively. Config is stored per-profile in `~/.config/claw-connect/profiles/<name>/`:
 
-| Variable     | Description                                     | Example                          |
-| ------------ | ----------------------------------------------- | -------------------------------- |
-| `IP`         | Public IP of the remote server                  | `1.2.3.4`                        |
-| `TUNNEL_IP`  | Private/tunnel IP (usually same host)           | `10.0.0.1`                       |
-| `SSH_USER`   | SSH username                                    | `ubuntu`                         |
-| `PEM_FILE`   | PEM key filename (relative to project root)     | `cred.pem`                       |
-| `REMOTE_DIR` | Directory on the server for VNC viewer files     | `/home/ubuntu/vnc`               |
+```
+~/.config/claw-connect/
+  profiles/
+    default/
+      config       # IP, SSH_USER, TUNNEL_IP, REMOTE_DIR
+      cred.pem     # PEM key (copied during setup)
+    staging/
+      config
+      cred.pem
+```
+
+| Variable     | Description                                  | Example          |
+| ------------ | -------------------------------------------- | ---------------- |
+| `IP`         | Public IP of the remote server               | `1.2.3.4`        |
+| `TUNNEL_IP`  | Private/tunnel IP (usually same host)        | `10.0.0.1`       |
+| `SSH_USER`   | SSH username                                 | `ubuntu`         |
+| `REMOTE_DIR` | Directory on the server for VNC viewer files | `/home/user/vnc` |
+
+### Multiple profiles
+
+```bash
+claw-connect setup                # create/edit "default" profile
+claw-connect setup staging        # create/edit "staging" profile
+claw-connect profiles             # list configured profiles
+claw-connect -p staging --tunnel  # use a named profile
+```
 
 ## Commands
 
-### `./connect.sh` -- SSH
+| Command | Description |
+| --- | --- |
+| `claw-connect` | SSH into the server |
+| `claw-connect --tunnel` | SSH tunnel — gateway (18789) + VNC browser (6090) |
+| `claw-connect --vnc` | Direct VNC tunnel on port 5900 (fastest, native client) |
+| `claw-connect --deploy` | Deploy/update VNC stack on the remote server |
+| `claw-connect --resume [name]` | Attach to a tmux session (default: `openclaw`) |
+| `claw-connect --list` | List remote tmux sessions |
+| `claw-connect --kill <name>` | Kill a remote tmux session |
+| `claw-connect --init-tmux` | Install optimized tmux config on remote |
+| `claw-connect setup [profile]` | Interactive setup wizard |
+| `claw-connect profiles` | List configured profiles |
+| `claw-connect --version` | Print installed version |
+| `-p <profile>` | Use a named profile (works with any command) |
+| `-u <user>` | Override SSH user |
 
-Plain SSH connection to the remote server.
+### Deploy details
 
-```bash
-./connect.sh              # Connect with default user from .env
-./connect.sh -u ec2-user  # Override SSH user
-```
+`--deploy` is idempotent — it skips what's already set up and only restarts the proxy when files change.
 
-### `./connect.sh --tunnel` -- SSH tunnel (browser)
+1. **Dependencies** — installs `bun`, `x11vnc`, `novnc` on the remote if missing
+2. **Files** — uploads `viewer.html` and `novnc-proxy.mjs`
+3. **Services** — creates and enables systemd units:
+   - `xvfb` — virtual X display (1920x1080)
+   - `x11vnc` — VNC server with server-side scaling
+   - `openclaw-novnc-proxy` — auth proxy (Bun, WebSocket-to-TCP bridge)
 
-Creates an SSH tunnel forwarding two ports to localhost:
+## Releasing
 
-- **18789** -- OpenClaw gateway
-- **6090** -- VNC viewer (noVNC auth proxy)
-
-Prints clickable URLs with the gateway token. Open the VNC URL in your browser to see the remote desktop.
-
-```bash
-./connect.sh --tunnel
-# Gateway: http://localhost:18789/?token=...
-# VNC:     http://localhost:6090/?token=...
-```
-
-### `./connect.sh --vnc` -- Direct VNC tunnel (fastest)
-
-Tunnels VNC port 5900 directly over SSH. Use with a native VNC client for the best performance -- no WebSocket overhead, no proxy layers.
-
-```bash
-./connect.sh --vnc
-# Then connect your VNC client to localhost:5900
-# macOS: open vnc://localhost:5900
-```
-
-### `./connect.sh --deploy` -- Deploy VNC stack
-
-Deploys and configures the full VNC viewer stack on the remote server. Idempotent -- skips what's already set up, only restarts the proxy when files change.
-
-What it does:
-
-1. **Dependencies** -- installs `bun`, `x11vnc`, `novnc` if missing
-2. **Files** -- uploads `viewer.html` and `novnc-proxy.mjs`
-3. **Services** -- creates systemd services (if missing) for the stack:
-   - `xvfb.service` -- virtual X display (1920x1080)
-   - `x11vnc.service` -- VNC server with server-side scaling
-   - `openclaw-novnc-proxy.service` -- auth proxy (Bun, bridges WebSocket to VNC TCP directly)
-
-All services are enabled for auto-start on boot.
+Releases are automated via GitHub Actions. To publish a new version:
 
 ```bash
-./connect.sh --deploy
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
-### `./connect.sh --resume` -- Tmux sessions
+This triggers the [release workflow](.github/workflows/release.yml) which:
 
-Attach to (or create) a tmux session on the remote server. Optimized for low-latency remote CLI use.
+1. Creates a GitHub Release with auto-generated notes
+2. Prepends the release entry to [CHANGELOG.md](CHANGELOG.md) and commits it to `main`
 
-```bash
-./connect.sh --resume                # Attach to 'openclaw' session
-./connect.sh --resume mysession      # Attach to 'mysession'
-./connect.sh --list                  # List all tmux sessions
-./connect.sh --kill mysession        # Kill a session
-./connect.sh --init-tmux             # Install optimized tmux config (once)
-```
+Tags follow [semver](https://semver.org/): `vMAJOR.MINOR.PATCH`.
 
 ## Architecture
 
 ```
-Local machine                          Remote server (AWS)
---------------                         -------------------
+Local machine                          Remote server
+--------------                         -------------
 
 Browser path (--tunnel):
-browser ──> localhost:6090 ─── SSH ───> novnc-proxy (Bun, :6090)
-                tunnel                      │ direct TCP
-                                       x11vnc (:5900)
-                                            │
-                                       Xvfb (:99, 1920x1080)
-                                            │
-                                       Chromium (headless)
+  browser → localhost:6090 ─── SSH ───→ novnc-proxy (Bun, :6090)
+                tunnel                       │ direct TCP
+                                        x11vnc (:5900)
+                                             │
+                                        Xvfb (:99, 1920×1080)
+                                             │
+                                        Chromium (headless)
 
 Native VNC path (--vnc):
-VNC client ──> localhost:5900 ── SSH ──> x11vnc (:5900)
-                  tunnel                     │
-                                        Xvfb (:99)
+  VNC client → localhost:5900 ── SSH ──→ x11vnc (:5900)
+                   tunnel                    │
+                                         Xvfb (:99)
 ```
-
-### VNC viewer (`vnc-viewer/`)
-
-- **`novnc-proxy.mjs`** -- Bun server that authenticates via gateway token, serves `viewer.html`, and bridges WebSocket traffic directly to x11vnc over TCP (no websockify needed).
-- **`viewer.html`** -- Minimal noVNC client. Auto-scales to fit the viewport, auto-reconnects with backoff if the server is down.
 
 ## Files
 
 ```
 .
-├── .env.example        # Config template
-├── .env                # Your config (git-ignored)
-├── .gitignore
-├── connect.sh          # Main CLI tool
-├── cred.pem            # SSH key (git-ignored)
-├── README.md
+├── install.sh            # Installer (works via curl | bash too)
+├── connect.sh            # Main CLI
+├── CHANGELOG.md          # Auto-maintained by CI
+├── .github/workflows/
+│   └── release.yml       # Tag → Release + CHANGELOG automation
+├── completions/
+│   ├── _claw-connect     # zsh completions
+│   └── claw-connect.bash # bash completions
 └── vnc-viewer/
-    ├── novnc-proxy.mjs # Auth proxy + WS-to-TCP bridge (Bun)
-    └── viewer.html     # noVNC browser client
+    ├── novnc-proxy.mjs   # Auth proxy + WS→TCP bridge (Bun)
+    └── viewer.html       # noVNC browser client
 ```
+
+Shell completions (bash, zsh, fish) are installed automatically.

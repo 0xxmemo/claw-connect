@@ -1,97 +1,191 @@
 #!/bin/bash
 
-# AWS Instance Connection Script
+# Claw Connect — Remote browser management CLI
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks to find the real install directory
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+    DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+CONFIG_DIR="$HOME/.config/claw-connect"
+PROFILE="default"
+VERSION="$(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null || echo "dev")"
 
-# ── Load .env ─────────────────────────────────────────────────
-ENV_FILE="$SCRIPT_DIR/.env"
-if [[ ! -f "$ENV_FILE" ]]; then
-    echo "Error: .env not found at $ENV_FILE"
-    echo "Copy .env.example to .env and fill in your values."
-    exit 1
-fi
-set -a
-source "$ENV_FILE"
-set +a
-
-# ── Resolve paths ────────────────────────────────────────────
-PEM_FILE="$SCRIPT_DIR/$PEM_FILE"
-
-if [[ ! -f "$PEM_FILE" ]]; then
-    echo "Error: PEM file not found at $PEM_FILE"
-    exit 1
-fi
-
-# Ensure correct permissions on PEM file
-chmod 400 "$PEM_FILE" 2>/dev/null || true
-
-# Create control path directory for SSH multiplexing
-CONTROL_PATH="$HOME/.ssh/control-%C"
-mkdir -p "$HOME/.ssh" 2>/dev/null || true
-
-# SSH options for stability and performance
-SSH_OPTS=(
-    -i "$PEM_FILE"
-    -o "StrictHostKeyChecking=no"
-    -o "ServerAliveInterval=30"
-    -o "ServerAliveCountMax=3"
-    -o "ConnectTimeout=10"
-    -o "TCPKeepAlive=yes"
-    -C  # Enable compression for better performance
-    -o "ControlMaster=auto"
-    -o "ControlPath=$CONTROL_PATH"
-    -o "ControlPersist=10m"
-)
-
+# ── Usage ─────────────────────────────────────────────────────
 usage() {
-    cat << EOF
-AWS Instance Connection Script
+    cat << 'EOF'
+Claw Connect — Remote browser management CLI
 
-Usage: $0 [options]
+Usage: claw-connect [options] [command]
 
-Configuration is loaded from .env (see .env.example).
+Commands:
+    setup [PROFILE]         Interactive setup wizard (default profile: "default")
+    profiles                List configured profiles
 
 Options:
-    -u, --user USER         SSH user (overrides .env)
+    -p, --profile PROFILE   Use a named profile (default: "default")
     -t, --tunnel            Create SSH tunnel (gateway + VNC browser)
     -v, --vnc               Direct VNC tunnel (fastest, needs VNC client)
+    -d, --deploy            Deploy VNC viewer & set up services on remote
     -r, --resume [SESSION]  Resume/attach to tmux session (default: openclaw)
     -l, --list              List all remote tmux sessions
     -k, --kill SESSION      Kill a specific tmux session
-    --init-tmux             Install optimized tmux config on remote server
-    -d, --deploy            Deploy VNC viewer & set up services on remote
+    -u, --user USER         Override SSH user
+    --init-tmux             Install optimized tmux config on remote
+    --version               Print version
     -h, --help              Show this help message
 
 Examples:
-    $0                          # SSH into the server
-    $0 --tunnel                 # Tunnel gateway (18789) + VNC browser (6090)
-    $0 --vnc                    # Direct VNC tunnel (use native VNC client)
-    $0 --deploy                 # Deploy VNC viewer to remote
-    $0 --resume                 # Attach to tmux session 'openclaw'
-    $0 --resume mysession       # Attach to tmux session 'mysession'
-    $0 --list                   # List remote tmux sessions
-    $0 --kill mysession         # Kill a tmux session
-    $0 --init-tmux              # Install tmux config (run once)
+    claw-connect setup                  # First-time setup
+    claw-connect setup staging          # Create "staging" profile
+    claw-connect profiles               # List profiles
+    claw-connect --tunnel               # Tunnel (default profile)
+    claw-connect -p staging --vnc       # Direct VNC with staging profile
+    claw-connect --deploy               # Deploy VNC stack to remote
+    claw-connect --resume               # Attach to tmux session
 EOF
 }
 
-# Parse arguments
+# ── Setup wizard ──────────────────────────────────────────────
+run_setup() {
+    local profile_name="${1:-default}"
+    local profile_dir="$CONFIG_DIR/profiles/$profile_name"
+    mkdir -p "$profile_dir"
+
+    echo "Claw Connect — Setup"
+    echo ""
+    echo "Profile: $profile_name"
+    echo "Config:  $profile_dir/"
+    echo ""
+
+    # Load existing values as defaults if editing
+    local cur_ip="" cur_tunnel_ip="" cur_ssh_user="ubuntu" cur_remote_dir="/home/ubuntu/vnc"
+    if [[ -f "$profile_dir/config" ]]; then
+        source "$profile_dir/config"
+        cur_ip="$IP"
+        cur_tunnel_ip="$TUNNEL_IP"
+        cur_ssh_user="$SSH_USER"
+        cur_remote_dir="$REMOTE_DIR"
+    fi
+
+    read -rp "Server public IP [$cur_ip]: " input_ip
+    IP="${input_ip:-$cur_ip}"
+    if [[ -z "$IP" ]]; then
+        echo "Error: IP is required."
+        exit 1
+    fi
+
+    read -rp "Tunnel IP (private/internal) [$cur_tunnel_ip]: " input_tunnel_ip
+    TUNNEL_IP="${input_tunnel_ip:-$cur_tunnel_ip}"
+    if [[ -z "$TUNNEL_IP" ]]; then
+        TUNNEL_IP="$IP"
+    fi
+
+    read -rp "SSH user [$cur_ssh_user]: " input_ssh_user
+    SSH_USER="${input_ssh_user:-$cur_ssh_user}"
+
+    read -rp "Remote directory [$cur_remote_dir]: " input_remote_dir
+    REMOTE_DIR="${input_remote_dir:-$cur_remote_dir}"
+
+    # PEM file
+    local cur_pem=""
+    if [[ -f "$profile_dir/cred.pem" ]]; then
+        cur_pem="(already configured)"
+    fi
+    read -rp "Path to PEM key file $cur_pem: " input_pem
+    if [[ -n "$input_pem" ]]; then
+        input_pem="${input_pem/#\~/$HOME}"
+        if [[ ! -f "$input_pem" ]]; then
+            echo "Error: File not found: $input_pem"
+            exit 1
+        fi
+        cp "$input_pem" "$profile_dir/cred.pem"
+        chmod 400 "$profile_dir/cred.pem"
+        echo "  PEM key copied to $profile_dir/cred.pem"
+    elif [[ ! -f "$profile_dir/cred.pem" ]]; then
+        echo "Error: PEM key is required for first-time setup."
+        exit 1
+    fi
+
+    # Write config
+    cat > "$profile_dir/config" << CONF
+IP=$IP
+TUNNEL_IP=$TUNNEL_IP
+SSH_USER=$SSH_USER
+REMOTE_DIR=$REMOTE_DIR
+CONF
+
+    echo ""
+    echo "Profile '$profile_name' saved to $profile_dir/"
+    echo ""
+    echo "Test connection:  claw-connect${profile_name:+ -p $profile_name}"
+    echo "Deploy VNC:       claw-connect${profile_name:+ -p $profile_name} --deploy"
+    exit 0
+}
+
+# ── List profiles ─────────────────────────────────────────────
+list_profiles() {
+    echo "Configured profiles:"
+    echo ""
+    local found=false
+    if [[ -d "$CONFIG_DIR/profiles" ]]; then
+        for dir in "$CONFIG_DIR/profiles"/*/; do
+            [[ -d "$dir" ]] || continue
+            local name
+            name="$(basename "$dir")"
+            if [[ -f "$dir/config" ]]; then
+                local ip=""
+                ip=$(grep '^IP=' "$dir/config" 2>/dev/null | cut -d= -f2-)
+                echo "  $name  ($ip)"
+                found=true
+            fi
+        done
+    fi
+    if [[ "$found" == false ]]; then
+        echo "  (none)"
+        echo ""
+        echo "Run 'claw-connect setup' to create one."
+    fi
+    exit 0
+}
+
+# ── Parse arguments ───────────────────────────────────────────
 TUNNEL_MODE=false
 VNC_MODE=false
 RESUME_MODE=false
 LIST_MODE=false
 INIT_TMUX=false
 DEPLOY_MODE=false
+SETUP_MODE=false
+PROFILES_MODE=false
 KILL_SESSION=""
 SESSION_NAME="openclaw"
 
+# Handle positional commands first
+case "${1:-}" in
+    setup)
+        SETUP_MODE=true
+        shift
+        ;;
+    profiles)
+        PROFILES_MODE=true
+        shift
+        ;;
+esac
+
 while [[ $# -gt 0 ]]; do
     case $1 in
+        -p|--profile)
+            PROFILE="$2"
+            shift 2
+            ;;
         -u|--user)
-            SSH_USER="$2"
+            SSH_USER_OVERRIDE="$2"
             shift 2
             ;;
         -t|--tunnel)
@@ -104,8 +198,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -r|--resume)
             RESUME_MODE=true
-            # Check if next arg is a session name (not a flag)
-            if [[ -n "$2" && "$2" != -* ]]; then
+            if [[ -n "${2:-}" && "$2" != -* ]]; then
                 SESSION_NAME="$2"
                 shift 2
             else
@@ -132,21 +225,94 @@ while [[ $# -gt 0 ]]; do
             DEPLOY_MODE=true
             shift
             ;;
+        --version)
+            echo "claw-connect $VERSION"
+            exit 0
+            ;;
         -h|--help)
             usage
             exit 0
             ;;
         *)
-            echo "Unknown option: $1"
-            usage
-            exit 1
+            # If in setup mode, treat remaining arg as profile name
+            if [[ "$SETUP_MODE" == true ]]; then
+                PROFILE="$1"
+                shift
+            else
+                echo "Unknown option: $1"
+                usage
+                exit 1
+            fi
             ;;
     esac
 done
 
-# Override SSH user if provided via flag
+# Handle profiles command
+if [[ "$PROFILES_MODE" == true ]]; then
+    list_profiles
+fi
 
-# Handle list mode
+# Handle setup command
+if [[ "$SETUP_MODE" == true ]]; then
+    run_setup "$PROFILE"
+fi
+
+# ── First-run guard ───────────────────────────────────────────
+PROFILE_DIR="$CONFIG_DIR/profiles/$PROFILE"
+if [[ ! -f "$PROFILE_DIR/config" ]]; then
+    # Check if any profile exists at all
+    if ! ls "$CONFIG_DIR/profiles"/*/config &>/dev/null; then
+        echo "No profiles configured. Running first-time setup..."
+        echo ""
+        run_setup "$PROFILE"
+    else
+        echo "Error: Profile '$PROFILE' not found."
+        echo "Available profiles:"
+        for dir in "$CONFIG_DIR/profiles"/*/; do
+            [[ -f "$dir/config" ]] && echo "  $(basename "$dir")"
+        done
+        exit 1
+    fi
+fi
+
+# ── Load profile config ──────────────────────────────────────
+set -a
+source "$PROFILE_DIR/config"
+set +a
+
+PEM_FILE="$PROFILE_DIR/cred.pem"
+
+# Override SSH user if -u was given
+if [[ -n "${SSH_USER_OVERRIDE:-}" ]]; then
+    SSH_USER="$SSH_USER_OVERRIDE"
+fi
+
+if [[ ! -f "$PEM_FILE" ]]; then
+    echo "Error: PEM file not found at $PEM_FILE"
+    echo "Run 'claw-connect setup $PROFILE' to fix."
+    exit 1
+fi
+
+chmod 400 "$PEM_FILE" 2>/dev/null || true
+
+# ── SSH options ───────────────────────────────────────────────
+CONTROL_PATH="$HOME/.ssh/control-%C"
+mkdir -p "$HOME/.ssh" 2>/dev/null || true
+
+SSH_OPTS=(
+    -i "$PEM_FILE"
+    -o "StrictHostKeyChecking=no"
+    -o "ServerAliveInterval=30"
+    -o "ServerAliveCountMax=3"
+    -o "ConnectTimeout=10"
+    -o "TCPKeepAlive=yes"
+    -C
+    -o "ControlMaster=auto"
+    -o "ControlPath=$CONTROL_PATH"
+    -o "ControlPersist=10m"
+)
+
+# ── Handle list mode ─────────────────────────────────────────
 if [[ "$LIST_MODE" == true ]]; then
     echo "Listing remote tmux sessions on $SSH_USER@$IP..."
     echo ""
@@ -154,14 +320,14 @@ if [[ "$LIST_MODE" == true ]]; then
     exit 0
 fi
 
-# Handle kill session
+# ── Handle kill session ──────────────────────────────────────
 if [[ -n "$KILL_SESSION" ]]; then
     echo "Killing tmux session '$KILL_SESSION' on $SSH_USER@$IP..."
     ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux kill-session -t '$KILL_SESSION' 2>/dev/null && echo 'Session killed successfully' || echo 'Error: Session not found or could not be killed'"
     exit 0
 fi
 
-# Handle init-tmux
+# ── Handle init-tmux ─────────────────────────────────────────
 if [[ "$INIT_TMUX" == true ]]; then
     echo "Installing optimized tmux config on $SSH_USER@$IP..."
     ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat > ~/.tmux.conf << 'TMUX_EOF'
@@ -221,7 +387,7 @@ echo 'Your next tmux session will use these optimized settings.'"
     exit 0
 fi
 
-# Handle deploy mode
+# ── Handle deploy mode ───────────────────────────────────────
 if [[ "$DEPLOY_MODE" == true ]]; then
     echo "Deploying vnc-viewer to $SSH_USER@$IP ..."
     echo ""
@@ -433,7 +599,7 @@ EOF
     exit 0
 fi
 
-# Handle direct VNC mode
+# ── Handle direct VNC mode ───────────────────────────────────
 if [[ "$VNC_MODE" == true ]]; then
     echo "Direct VNC tunnel: localhost:5900 -> $IP:5900"
     echo ""
@@ -447,7 +613,7 @@ if [[ "$VNC_MODE" == true ]]; then
     exit 0
 fi
 
-# Handle tunnel mode
+# ── Handle tunnel mode ───────────────────────────────────────
 if [[ "$TUNNEL_MODE" == true ]]; then
     echo "Creating SSH tunnel: localhost:18789 -> $TUNNEL_IP:18789, localhost:6090 -> $TUNNEL_IP:6090"
 
@@ -475,13 +641,11 @@ if [[ "$TUNNEL_MODE" == true ]]; then
     exit 0
 fi
 
+# ── Default: SSH into server ─────────────────────────────────
 echo "Connecting to $SSH_USER@$IP..."
 
-# Handle resume mode with tmux
 if [[ "$RESUME_MODE" == true ]]; then
     echo "Attaching to tmux session '$SESSION_NAME' (or creating new one)..."
-    echo "Tip: Run './connect.sh --init-tmux' once for optimal performance"
-    # Use optimized settings (config file if exists, otherwise inline)
     TMUX_CMD="TERM=screen-256color tmux -u attach -t '$SESSION_NAME' 2>/dev/null || TERM=screen-256color tmux -u new -s '$SESSION_NAME'"
     ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "$TMUX_CMD"
 else
