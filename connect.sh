@@ -28,23 +28,22 @@ Commands:
 
 Options:
   -p, --profile PROFILE   Use a named profile (default: "default")
-  -t, --tunnel            Create SSH tunnel (gateway + fork-native VNC route)
-      --legacy-vnc        Add legacy VNC browser tunnel (localhost:6090)
-  -v, --vnc               Direct VNC tunnel (fastest, needs VNC client)
+  -t, --tunnel            Create SSH tunnel (gateway + VNC on /vnc route)
+  -v, --vnc               Direct VNC tunnel (raw protocol, needs VNC client)
   -r, --resume [SESSION]  Resume/attach to tmux session (default: openclaw)
   -l, --list              List all remote tmux sessions
   -k, --kill SESSION      Kill a specific tmux session
   -u, --user USER         Override SSH user
+      --update            Update claw-connect to latest version (git pull)
       --init-tmux         Install optimized tmux config on remote
-      --deploy            Deprecated (legacy external noVNC deploy removed)
       --version           Print version
   -h, --help              Show this help message
 
 Examples:
   claw-connect setup
   claw-connect --tunnel
-  claw-connect --tunnel --legacy-vnc
   claw-connect -p staging --vnc
+  claw-connect --resume
 EOF
 }
 
@@ -134,8 +133,6 @@ LIST_MODE=false
 INIT_TMUX=false
 SETUP_MODE=false
 PROFILES_MODE=false
-LEGACY_VNC_TUNNEL=false
-DEPLOY_MODE=false
 KILL_SESSION=""
 SESSION_NAME="openclaw"
 
@@ -149,7 +146,6 @@ while [[ $# -gt 0 ]]; do
     -p|--profile) PROFILE="$2"; shift 2 ;;
     -u|--user) SSH_USER_OVERRIDE="$2"; shift 2 ;;
     -t|--tunnel) TUNNEL_MODE=true; shift ;;
-    --legacy-vnc) LEGACY_VNC_TUNNEL=true; shift ;;
     -v|--vnc) VNC_MODE=true; shift ;;
     -r|--resume)
       RESUME_MODE=true
@@ -161,8 +157,8 @@ while [[ $# -gt 0 ]]; do
       [[ -n "$KILL_SESSION" ]] || { echo "Error: --kill requires a session name"; exit 1; }
       shift 2
       ;;
+    --update) echo "Updating claw-connect..."; git -C "$SCRIPT_DIR" pull --ff-only && echo "Updated to $(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null || git -C "$SCRIPT_DIR" rev-parse --short HEAD)"; exit 0 ;;
     --init-tmux) INIT_TMUX=true; shift ;;
-    --deploy|-d) DEPLOY_MODE=true; shift ;;
     --version) echo "claw-connect $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -174,20 +170,6 @@ done
 
 [[ "$PROFILES_MODE" == true ]] && list_profiles
 [[ "$SETUP_MODE" == true ]] && run_setup "$PROFILE"
-
-if [[ "$DEPLOY_MODE" == true ]]; then
-  cat << 'EOF'
---deploy is deprecated.
-
-claw-connect now targets OpenClaw fork-native noVNC integration.
-Use browser.vnc.enabled=true in openclaw.json and start/restart gateway on remote host.
-
-Legacy external deploy scripts were removed from this package.
-If you still need legacy mode temporarily, keep your existing remote 6090 stack and run:
-  claw-connect --tunnel --legacy-vnc
-EOF
-  exit 1
-fi
 
 PROFILE_DIR="$CONFIG_DIR/profiles/$PROFILE"
 if [[ ! -f "$PROFILE_DIR/config" ]]; then
@@ -283,6 +265,7 @@ if [[ "$VNC_MODE" == true ]]; then
 fi
 
 if [[ "$TUNNEL_MODE" == true ]]; then
+  # Fetch gateway token from remote
   GATEWAY_TOKEN="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" '
     python3 - <<"PY"
 import json, os, pathlib
@@ -306,37 +289,21 @@ print(tok)
 PY
   ' 2>/dev/null || true)"
 
-  LEGACY_AVAILABLE="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" 'ss -ltn 2>/dev/null | grep -q ":6090 " && echo yes || echo no' 2>/dev/null || echo no)"
-
-  echo "Creating SSH tunnel:"
-  echo "  localhost:18789 -> $TUNNEL_IP:18789 (gateway + native /vnc)"
-  if [[ "$LEGACY_VNC_TUNNEL" == true || "$LEGACY_AVAILABLE" == "yes" ]]; then
-    echo "  localhost:6090  -> $TUNNEL_IP:6090  (legacy fallback)"
-  fi
+  echo "Creating SSH tunnel: localhost:18789 -> $TUNNEL_IP:18789"
   echo ""
 
   if [[ -n "$GATEWAY_TOKEN" ]]; then
-    echo "  Gateway:    http://localhost:18789/?token=$GATEWAY_TOKEN"
-    echo "  VNC native: http://localhost:18789/vnc?token=$GATEWAY_TOKEN"
-    if [[ "$LEGACY_VNC_TUNNEL" == true || "$LEGACY_AVAILABLE" == "yes" ]]; then
-      echo "  VNC legacy: http://localhost:6090/?token=$GATEWAY_TOKEN"
-    fi
+    echo "  Gateway: http://localhost:18789/?token=$GATEWAY_TOKEN"
+    echo "  Browser: http://localhost:18789/vnc?token=$GATEWAY_TOKEN"
   else
-    echo "  Gateway:    http://localhost:18789"
-    echo "  VNC native: http://localhost:18789/vnc"
-    if [[ "$LEGACY_VNC_TUNNEL" == true || "$LEGACY_AVAILABLE" == "yes" ]]; then
-      echo "  VNC legacy: http://localhost:6090"
-    fi
+    echo "  Gateway: http://localhost:18789"
+    echo "  Browser: http://localhost:18789/vnc"
     echo "  (could not fetch gateway token from remote)"
   fi
   echo ""
-  echo "Tunnel active. Press Ctrl+C to close."
+  echo "Tunnel will remain active. Press Ctrl+C to close."
 
-  if [[ "$LEGACY_VNC_TUNNEL" == true || "$LEGACY_AVAILABLE" == "yes" ]]; then
-    ssh "${SSH_OPTS[@]}" -N -L 18789:127.0.0.1:18789 -L 6090:127.0.0.1:6090 "$SSH_USER@$IP"
-  else
-    ssh "${SSH_OPTS[@]}" -N -L 18789:127.0.0.1:18789 "$SSH_USER@$IP"
-  fi
+  ssh "${SSH_OPTS[@]}" -N -L 18789:127.0.0.1:18789 "$SSH_USER@$IP"
   exit 0
 fi
 

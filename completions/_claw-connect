@@ -1,66 +1,47 @@
 #compdef claw-connect
 
-# zsh completions for claw-connect
+_claw-connect() {
+  local -a commands opts
 
-_claw_connect_profiles() {
-    local config_dir="$HOME/.config/claw-connect/profiles"
-    local -a profiles
-    if [[ -d "$config_dir" ]]; then
-        for dir in "$config_dir"/*(N/); do
-            [[ -f "$dir/config" ]] && profiles+=("$(basename "$dir")")
-        done
-    fi
-    _describe 'profile' profiles
+  commands=(
+    'setup:Interactive setup wizard'
+    'profiles:List configured profiles'
+  )
+
+  opts=(
+    '-p[Use named profile]:profile:_claw_connect_profiles'
+    '--profile[Use named profile]:profile:_claw_connect_profiles'
+    '-t[Create SSH tunnel (gateway + VNC)]'
+    '--tunnel[Create SSH tunnel (gateway + VNC)]'
+    '-v[Direct VNC tunnel (raw protocol)]'
+    '--vnc[Direct VNC tunnel (raw protocol)]'
+    '-r[Resume tmux session]:session:'
+    '--resume[Resume tmux session]:session:'
+    '-l[List remote tmux sessions]'
+    '--list[List remote tmux sessions]'
+    '-k[Kill tmux session]:session:'
+    '--kill[Kill tmux session]:session:'
+    '-u[Override SSH user]:user:'
+    '--user[Override SSH user]:user:'
+    '--update[Update claw-connect to latest version]'
+    '--init-tmux[Install tmux config on remote]'
+    '--version[Print version]'
+    '-h[Show help]'
+    '--help[Show help]'
+  )
+
+  _arguments -s $opts
+
+  if (( CURRENT == 2 )); then
+    _describe 'command' commands
+  fi
 }
 
-_claw-connect() {
-    local -a commands flags
-
-    commands=(
-        'setup:Interactive setup wizard'
-        'profiles:List configured profiles'
-    )
-
-    flags=(
-        {-p,--profile}'[Use a named profile]:profile:_claw_connect_profiles'
-        {-t,--tunnel}'[Create SSH tunnel (gateway + fork-native VNC route)]'
-        '--legacy-vnc[Add legacy VNC browser tunnel on localhost:6090]'
-        {-v,--vnc}'[Direct VNC tunnel (fastest, needs VNC client)]'
-        {-r,--resume}'[Resume/attach to tmux session]:session name:'
-        {-l,--list}'[List all remote tmux sessions]'
-        {-k,--kill}'[Kill a specific tmux session]:session name:'
-        {-u,--user}'[Override SSH user]:username:'
-        '--init-tmux[Install optimized tmux config on remote]'
-        '--version[Print version]'
-        {-h,--help}'[Show help message]'
-    )
-
-    if (( CURRENT >= 3 )) && [[ "${words[2]}" == "setup" ]]; then
-        _claw_connect_profiles
-        return
-    fi
-
-    _arguments -s \
-        '1: :->cmd_or_flag' \
-        '*:: :->args' && return
-
-    case $state in
-        cmd_or_flag)
-            _alternative \
-                'commands:command:_describe "command" commands' \
-                'flags:flag:_arguments $flags'
-            ;;
-        args)
-            case "${words[1]}" in
-                setup)
-                    _claw_connect_profiles
-                    ;;
-                *)
-                    _arguments $flags
-                    ;;
-            esac
-            ;;
-    esac
+_claw_connect_profiles() {
+  local config_dir="$HOME/.config/claw-connect/profiles"
+  if [[ -d "$config_dir" ]]; then
+    _files -W "$config_dir" -/
+  fi
 }
 
 _claw-connect "$@"
