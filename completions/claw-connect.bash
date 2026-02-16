@@ -20,29 +20,23 @@ _claw_connect_completions() {
     fi
 
     local commands="setup profiles"
-    local flags="-p --profile -t --tunnel -v --vnc -d --deploy -r --resume -l --list -k --kill -u --user --init-tmux -h --help"
+    local flags="-p --profile -t --tunnel --legacy-vnc -v --vnc -r --resume -l --list -k --kill -u --user --init-tmux --version -h --help"
 
-    # Complete profile name after -p / --profile / setup
     case "$prev" in
         -p|--profile|setup)
             COMPREPLY=( $(compgen -W "$(_claw_connect_profiles)" -- "$cur") )
             return
             ;;
-        -u|--user)
-            return  # user provides their own value
-            ;;
-        -k|--kill|-r|--resume)
-            return  # session name, no completions
+        -u|--user|-k|--kill|-r|--resume)
+            return
             ;;
     esac
 
-    # If current word starts with -, complete flags
     if [[ "$cur" == -* ]]; then
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
         return
     fi
 
-    # Default: complete commands and flags
     COMPREPLY=( $(compgen -W "$commands $flags" -- "$cur") )
 }
 

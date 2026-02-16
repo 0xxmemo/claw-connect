@@ -163,9 +163,9 @@ case "$CURRENT_SHELL" in
 complete -c claw-connect -f
 complete -c claw-connect -n '__fish_use_subcommand' -a 'setup' -d 'Interactive setup wizard'
 complete -c claw-connect -n '__fish_use_subcommand' -a 'profiles' -d 'List configured profiles'
-complete -c claw-connect -n '__fish_use_subcommand' -s t -l tunnel -d 'SSH tunnel (gateway + VNC browser)'
+complete -c claw-connect -n '__fish_use_subcommand' -s t -l tunnel -d 'SSH tunnel (gateway + fork-native VNC route)'
+complete -c claw-connect -n '__fish_use_subcommand' -l legacy-vnc -d 'Add legacy browser VNC tunnel on localhost:6090'
 complete -c claw-connect -n '__fish_use_subcommand' -s v -l vnc -d 'Direct VNC tunnel'
-complete -c claw-connect -n '__fish_use_subcommand' -s d -l deploy -d 'Deploy VNC stack to remote'
 complete -c claw-connect -n '__fish_use_subcommand' -s r -l resume -d 'Resume tmux session'
 complete -c claw-connect -n '__fish_use_subcommand' -s l -l list -d 'List remote tmux sessions'
 complete -c claw-connect -n '__fish_use_subcommand' -s k -l kill -d 'Kill tmux session'
