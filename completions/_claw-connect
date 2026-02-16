@@ -23,18 +23,18 @@ _claw-connect() {
 
     flags=(
         {-p,--profile}'[Use a named profile]:profile:_claw_connect_profiles'
-        {-t,--tunnel}'[Create SSH tunnel (gateway + VNC browser)]'
+        {-t,--tunnel}'[Create SSH tunnel (gateway + fork-native VNC route)]'
+        '--legacy-vnc[Add legacy VNC browser tunnel on localhost:6090]'
         {-v,--vnc}'[Direct VNC tunnel (fastest, needs VNC client)]'
-        {-d,--deploy}'[Deploy VNC viewer & set up services on remote]'
         {-r,--resume}'[Resume/attach to tmux session]:session name:'
         {-l,--list}'[List all remote tmux sessions]'
         {-k,--kill}'[Kill a specific tmux session]:session name:'
         {-u,--user}'[Override SSH user]:username:'
         '--init-tmux[Install optimized tmux config on remote]'
+        '--version[Print version]'
         {-h,--help}'[Show help message]'
     )
 
-    # If we're completing after "setup", complete profile names
     if (( CURRENT >= 3 )) && [[ "${words[2]}" == "setup" ]]; then
         _claw_connect_profiles
         return
