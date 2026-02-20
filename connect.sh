@@ -201,6 +201,8 @@ mkdir -p "$HOME/.ssh" 2>/dev/null || true
 SSH_OPTS=(
   -i "$PEM_FILE"
   -o "StrictHostKeyChecking=no"
+  -o "UserKnownHostsFile=/dev/null"
+  -o "LogLevel=ERROR"
   -o "ServerAliveInterval=30"
   -o "ServerAliveCountMax=3"
   -o "ConnectTimeout=10"
