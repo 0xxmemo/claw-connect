@@ -18,6 +18,22 @@ chmod +x ~/claw-connect/connect.sh
 ln -sf ~/claw-connect/connect.sh ~/.local/bin/claw-connect
 ```
 
+### Shell Completions
+
+**Bash** — installed automatically, or copy manually:
+
+```bash
+cp completions/claw-connect.bash ~/.bash_completion.d/claw-connect
+```
+
+**Zsh** — add the completions directory to your `fpath`:
+
+```zsh
+# Add to ~/.zshrc
+fpath=(~/claw-connect/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
 ## Setup
 
 ```bash
@@ -40,6 +56,7 @@ claw-connect -p staging --tunnel
 
 ```bash
 claw-connect -t
+claw-connect -t -p quantide    # specific profile
 ```
 
 Opens an SSH tunnel on `localhost:18789`. Output:
@@ -52,6 +69,10 @@ Creating SSH tunnel: localhost:18789 -> 172.31.x.x:18789
 
 Tunnel will remain active. Press Ctrl+C to close.
 ```
+
+Switching profiles automatically kills any existing tunnel on port 18789 before starting the new one — no manual cleanup needed.
+
+The gateway token is auto-fetched from the remote server. It reads `openclaw.json` first and resolves any `${VAR}` references against `.env`, falling back to `OPENCLAW_GATEWAY_TOKEN` in `.env` directly.
 
 The `/vnc` route serves a built-in noVNC viewer — no external scripts needed. Enable it on the server:
 
@@ -115,9 +136,11 @@ claw-connect -u root         # Override user
 
 ## How It Works
 
-1. **Token auto-fetch**: Reads gateway auth token from remote `openclaw.json` via SSH
-2. **Single tunnel**: One SSH connection forwards port 18789 (gateway serves both UI and VNC)
-3. **Built-in viewer**: The gateway's `/vnc` route serves noVNC — no separate proxy or scripts
+1. **Token auto-fetch**: Reads gateway auth token from remote `openclaw.json`, resolves `${VAR}` references from `.env`
+2. **Tunnel takeover**: Starting a tunnel automatically kills any existing tunnel on the same port
+3. **Host key handling**: Uses ephemeral known hosts — server reprovisioning never causes connection failures
+4. **Single tunnel**: One SSH connection forwards port 18789 (gateway serves both UI and VNC)
+5. **Built-in viewer**: The gateway's `/vnc` route serves noVNC — no separate proxy or scripts
 
 ---
 

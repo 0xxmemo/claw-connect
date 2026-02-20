@@ -20,9 +20,24 @@ BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
 ln -sf "$INSTALL_DIR/connect.sh" "$BIN_DIR/claw-connect"
 
-# Install completions
+# Install bash completions
 if [[ -d "$HOME/.bash_completion.d" ]] || mkdir -p "$HOME/.bash_completion.d"; then
   cp "$INSTALL_DIR/completions/claw-connect.bash" "$HOME/.bash_completion.d/claw-connect"
+  echo "  Bash completions installed to ~/.bash_completion.d/"
+fi
+
+# Install zsh completions
+ZSH_COMP_DIR="${ZDOTDIR:-$HOME}/.zfunc"
+if command -v zsh &>/dev/null; then
+  mkdir -p "$ZSH_COMP_DIR"
+  cp "$INSTALL_DIR/completions/_claw-connect" "$ZSH_COMP_DIR/_claw-connect"
+  echo "  Zsh completions installed to $ZSH_COMP_DIR/"
+  if ! grep -q 'fpath.*\.zfunc' "${ZDOTDIR:-$HOME}/.zshrc" 2>/dev/null; then
+    echo ""
+    echo "Add to your ~/.zshrc for zsh completions:"
+    echo "  fpath=(~/.zfunc \$fpath)"
+    echo "  autoload -Uz compinit && compinit"
+  fi
 fi
 
 echo ""

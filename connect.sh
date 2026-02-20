@@ -275,13 +275,28 @@ if [[ "$TUNNEL_MODE" == true ]]; then
   fi
 
   # Fetch gateway token from remote
-  GATEWAY_TOKEN="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" '
-    python3 - <<"PY"
-import json, os, pathlib
+  GATEWAY_TOKEN="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" python3 - 2>/dev/null <<'PY'
+import json, os, pathlib, re
 home = pathlib.Path.home()
 cfg = home / ".openclaw" / "openclaw.json"
 env = home / ".openclaw" / ".env"
 
+def load_env(path):
+    vals = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                vals[k.strip()] = v.strip().strip("\"'")
+    return vals
+
+def resolve(s, env_vals):
+    if not s:
+        return s
+    return re.sub(r"\$\{(\w+)\}", lambda m: env_vals.get(m.group(1), m.group(0)), s)
+
+env_vals = load_env(env)
 tok = ""
 if cfg.exists():
     try:
@@ -289,14 +304,14 @@ if cfg.exists():
         tok = data.get("gateway", {}).get("auth", {}).get("token", "")
     except Exception:
         pass
-if not tok and env.exists():
-    for line in env.read_text().splitlines():
-        if line.startswith("OPENCLAW_GATEWAY_TOKEN="):
-            tok = line.split("=",1)[1].strip()
-            break
+
+tok = resolve(tok, env_vals)
+
+if not tok:
+    tok = env_vals.get("OPENCLAW_GATEWAY_TOKEN", "")
 print(tok)
 PY
-  ' 2>/dev/null || true)"
+  )"
 
   echo "Creating SSH tunnel: localhost:18789 -> $TUNNEL_IP:18789"
   echo ""
