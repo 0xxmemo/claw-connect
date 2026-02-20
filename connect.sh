@@ -267,6 +267,13 @@ if [[ "$VNC_MODE" == true ]]; then
 fi
 
 if [[ "$TUNNEL_MODE" == true ]]; then
+  # Kill any existing SSH tunnels on port 18789
+  existing_pids="$(lsof -ti :18789 -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -n "$existing_pids" ]]; then
+    echo "$existing_pids" | xargs kill 2>/dev/null || true
+    sleep 0.5
+  fi
+
   # Fetch gateway token from remote
   GATEWAY_TOKEN="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" '
     python3 - <<"PY"
