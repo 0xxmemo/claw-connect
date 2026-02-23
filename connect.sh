@@ -569,28 +569,19 @@ do_resume_session() {
     saved_cwd="$(echo "$prev_state" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4 || echo "")"
   fi
 
-  # Check if session exists on remote
+  # Check if session exists on remote and get client count
+  local remote_status=""
   if session_exists_remote "$SESSION_NAME"; then
-    local remote_status="$(get_remote_session_status "$SESSION_NAME")"
-    if [[ -n "$remote_status" && "$remote_status" -gt 0 ]]; then
-      echo "Session '$SESSION_NAME' is already attached elsewhere ($remote_status client(s))."
-      echo "Attaching anyway (may create nested session)..."
-    else
-      echo "Session '$SESSION_NAME' exists and is reachable (detached)."
-      if [[ "$last_state" == "exited" ]]; then
-        echo "  (Previously marked as exited at $last_seen - session was recovered)"
-      fi
-    fi
-    echo "Attaching to tmux session '$SESSION_NAME'..."
-    local TMUX_CMD="TERM=screen-256color tmux -u attach -t '$SESSION_NAME'"
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "$TMUX_CMD"
-    # Save cwd after detach
-    local current_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux display-message -p -t '$SESSION_NAME' '#{pane_current_path}' 2>/dev/null" || echo "")"
-    if [[ -n "$current_cwd" ]]; then
-      save_session_cwd "$PROFILE" "$SESSION_NAME" "$current_cwd"
-      save_session_state "$PROFILE" "$SESSION_NAME" "detached" "$current_cwd"
-    else
-      save_session_state "$PROFILE" "$SESSION_NAME" "detached"
+    remote_status="$(get_remote_session_status "$SESSION_NAME")"
+  fi
+
+  if [[ -n "$remote_status" && "$remote_status" -gt 0 ]]; then
+    echo "Session '$SESSION_NAME' is already attached elsewhere ($remote_status client(s))."
+    echo "Attaching anyway (may create nested session)..."
+  elif [[ -n "$remote_status" ]]; then
+    echo "Session '$SESSION_NAME' exists and is reachable (detached)."
+    if [[ "$last_state" == "exited" ]]; then
+      echo "  (Previously marked as exited at $last_seen - session was recovered)"
     fi
   else
     # Session doesn't exist - check if we have a record of it
@@ -599,21 +590,25 @@ do_resume_session() {
       if [[ -n "$saved_cwd" ]]; then
         echo "  Last working directory: $saved_cwd"
       fi
-      echo "  Session no longer exists on remote (may have been killed or server restarted)"
     fi
-    echo "Session '$SESSION_NAME' does not exist. Creating new session..."
+    echo "Creating new tmux session '$SESSION_NAME'..."
+  fi
 
-    # Create session with remain-on-exit enabled and restore cwd if available
-    local TMUX_CMD=""
-    if [[ -n "$saved_cwd" ]]; then
-      echo "Restoring working directory: $saved_cwd"
-      TMUX_CMD="TERM=screen-256color tmux -u new -s '$SESSION_NAME' -c '$saved_cwd'"
-    else
-      TMUX_CMD="TERM=screen-256color tmux -u new -s '$SESSION_NAME'"
-    fi
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "$TMUX_CMD"
-    # Mark session as attached after successful connection
-    save_session_state "$PROFILE" "$SESSION_NAME" "attached"
+  # Use tmux new-session -A: attaches if exists, creates if not
+  # -A is equivalent to: has-session && attach || new-session
+  if [[ -n "$saved_cwd" ]]; then
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -A -s '$SESSION_NAME' -c '$saved_cwd'"
+  else
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -A -s '$SESSION_NAME'"
+  fi
+
+  # Save cwd after detach
+  local current_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux display-message -p -t '$SESSION_NAME' '#{pane_current_path}' 2>/dev/null" || echo "")"
+  if [[ -n "$current_cwd" ]]; then
+    save_session_cwd "$PROFILE" "$SESSION_NAME" "$current_cwd"
+    save_session_state "$PROFILE" "$SESSION_NAME" "detached" "$current_cwd"
+  else
+    save_session_state "$PROFILE" "$SESSION_NAME" "detached"
   fi
   set -e
 }

@@ -104,11 +104,13 @@ claw-connect -k mysession    # Kill session
 claw-connect --init-tmux     # Install tmux config on remote
 ```
 
+**Session auto-create** — Uses `tmux new-session -A` which attaches if the session exists or creates it if not. No manual session management needed.
+
 **Working directory & history preserved** — When you detach or your shell exits, claw-connect saves your last working directory. Reconnecting restores it automatically.
 
 ### Session Tracking
 
-Session state is automatically tracked per profile. Exited sessions that are still reachable on the remote will be reconnected automatically.
+Session state is automatically tracked per profile for working directory restoration.
 
 ```bash
 claw-connect sessions                # List tracked session states (includes last CWD)
