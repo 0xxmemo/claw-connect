@@ -570,6 +570,25 @@ enable_remain_on_exit() {
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux set-option -t '$session' remain-on-exit on 2>/dev/null" || true
 }
 
+# Check if pane is dead and respawn it with a new shell
+respawn_dead_pane() {
+  local session="$1"
+  local cwd="$2"
+  # Check if the pane is dead (exit status != empty)
+  local pane_dead="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux display-message -p -t '$session' '#{pane_dead}' 2>/dev/null")"
+  if [[ "$pane_dead" == "1" ]]; then
+    echo "  Pane was dead, respawning shell..."
+    # Detach any clients first (respawn may fail if attached)
+    ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux detach -t '$session' 2>/dev/null" || true
+    sleep 0.2
+    if [[ -n "$cwd" ]]; then
+      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux respawn-pane -t '$session' -c '$cwd' 'exec bash -l' 2>/dev/null" || true
+    else
+      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux respawn-pane -t '$session' 'exec bash -l' 2>/dev/null" || true
+    fi
+  fi
+}
+
 # Resume session with tracking and reconnection logic
 do_resume_session() {
   set +e
@@ -602,9 +621,11 @@ do_resume_session() {
       fi
     fi
     echo "Attaching to tmux session '$SESSION_NAME'..."
-    # Ensure remain-on-exit is enabled, then attach
-    # Use -d to detach other clients (prevents nested tmux issues)
+    # Ensure remain-on-exit is enabled
     enable_remain_on_exit "$SESSION_NAME"
+    # Check if pane is dead and respawn it before attaching
+    respawn_dead_pane "$SESSION_NAME" "$saved_cwd"
+    # Use -d to detach other clients (prevents nested tmux issues)
     ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -d -t '$SESSION_NAME'"
   else
     # Session doesn't exist - create it
