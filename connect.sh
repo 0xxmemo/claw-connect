@@ -569,37 +569,46 @@ do_resume_session() {
     saved_cwd="$(echo "$prev_state" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4 || echo "")"
   fi
 
-  # Check if session exists on remote and get client count
-  local remote_status=""
-  if session_exists_remote "$SESSION_NAME"; then
-    remote_status="$(get_remote_session_status "$SESSION_NAME")"
+  # Check if session exists on remote
+  set +e
+  local session_exists=false
+  if session_exists_remote "$SESSION_NAME" 2>/dev/null; then
+    session_exists=true
   fi
 
-  if [[ -n "$remote_status" && "$remote_status" -gt 0 ]]; then
-    echo "Session '$SESSION_NAME' is already attached elsewhere ($remote_status client(s))."
-    echo "Attaching anyway (may create nested session)..."
-  elif [[ -n "$remote_status" ]]; then
-    echo "Session '$SESSION_NAME' exists and is reachable (detached)."
-    if [[ "$last_state" == "exited" ]]; then
-      echo "  (Previously marked as exited at $last_seen - session was recovered)"
+  if [[ "$session_exists" == true ]]; then
+    local remote_status="$(get_remote_session_status "$SESSION_NAME")"
+    if [[ -n "$remote_status" && "$remote_status" -gt 0 ]]; then
+      echo "Session '$SESSION_NAME' is already attached elsewhere ($remote_status client(s))."
+      echo "Attaching anyway (may create nested session)..."
+    else
+      echo "Session '$SESSION_NAME' exists and is reachable (detached)."
+      if [[ "$last_state" == "exited" ]]; then
+        echo "  (Previously marked as exited at $last_seen - session was recovered)"
+      fi
     fi
+    echo "Attaching to tmux session '$SESSION_NAME'..."
+    # Attach to existing session
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -t '$SESSION_NAME'"
   else
-    # Session doesn't exist - check if we have a record of it
+    # Session doesn't exist - create it
     if [[ -n "$prev_state" ]]; then
       echo "Session '$SESSION_NAME' was last seen as '$last_state' at $last_seen"
       if [[ -n "$saved_cwd" ]]; then
         echo "  Last working directory: $saved_cwd"
+        echo "Creating new tmux session '$SESSION_NAME' in: $saved_cwd"
+        # Create session in detached mode with bash, then attach
+        ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -d -s '$SESSION_NAME' -c '$saved_cwd' -n bash 'exec bash -l'"
+      else
+        echo "Creating new tmux session '$SESSION_NAME'..."
+        ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -d -s '$SESSION_NAME' -n bash 'exec bash -l'"
       fi
+    else
+      echo "Creating new tmux session '$SESSION_NAME'..."
+      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -d -s '$SESSION_NAME' -n bash 'exec bash -l'"
     fi
-    echo "Creating new tmux session '$SESSION_NAME'..."
-  fi
-
-  # Use tmux new-session -A: attaches if exists, creates if not
-  # -A is equivalent to: has-session && attach || new-session
-  if [[ -n "$saved_cwd" ]]; then
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -A -s '$SESSION_NAME' -c '$saved_cwd'"
-  else
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -A -s '$SESSION_NAME'"
+    # Now attach to the newly created session
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -t '$SESSION_NAME'"
   fi
 
   # Save cwd after detach
