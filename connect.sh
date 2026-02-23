@@ -68,9 +68,14 @@ save_session_state() {
   local profile="$1"
   local session="$2"
   local state="$3"  # "attached", "detached", "exited"
+  local cwd="$4"   # optional: last working directory
   local timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local state_file="$(get_session_state_file "$profile" "$session")"
-  echo "{\"session\":\"$session\",\"profile\":\"$profile\",\"state\":\"$state\",\"last_seen\":\"$timestamp\"}" > "$state_file"
+  local cwd_json=""
+  if [[ -n "$cwd" ]]; then
+    cwd_json=",\"cwd\":\"$cwd\""
+  fi
+  echo "{\"session\":\"$session\",\"profile\":\"$profile\",\"state\":\"$state\",\"last_seen\":\"$timestamp\"$cwd_json}" > "$state_file"
 }
 
 get_session_state() {
@@ -79,6 +84,17 @@ get_session_state() {
   local state_file="$(get_session_state_file "$profile" "$session")"
   if [[ -f "$state_file" ]]; then
     cat "$state_file"
+  else
+    echo ""
+  fi
+}
+
+get_session_cwd() {
+  local profile="$1"
+  local session="$2"
+  local state="$(get_session_state "$profile" "$session")"
+  if [[ -n "$state" ]]; then
+    echo "$state" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4 || echo ""
   else
     echo ""
   fi
@@ -185,12 +201,13 @@ list_sessions() {
   if [[ -d "$SESSION_STATE_DIR" ]]; then
     for state_file in "$SESSION_STATE_DIR"/*.state; do
       [[ -f "$state_file" ]] || continue
-      local content profile_name session_name state last_seen
+      local content profile_name session_name state last_seen cwd
       content="$(cat "$state_file")"
       profile_name="$(echo "$content" | grep -o '"profile":"[^"]*"' | cut -d'"' -f4)"
       session_name="$(echo "$content" | grep -o '"session":"[^"]*"' | cut -d'"' -f4)"
       state="$(echo "$content" | grep -o '"state":"[^"]*"' | cut -d'"' -f4)"
       last_seen="$(echo "$content" | grep -o '"last_seen":"[^"]*"' | cut -d'"' -f4)"
+      cwd="$(echo "$content" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4)"
 
       # Filter by profile if specified
       if [[ "$PROFILE" != "default" && "$profile_name" != "$PROFILE" ]]; then
@@ -199,6 +216,9 @@ list_sessions() {
 
       echo "  $profile_name / $session_name"
       echo "    State: $state, Last seen: $last_seen"
+      if [[ -n "$cwd" ]]; then
+        echo "    CWD: $cwd"
+      fi
       found=true
     done
   fi
@@ -397,8 +417,13 @@ bind j select-pane -D
 bind k select-pane -U
 bind l select-pane -R
 bind r source-file ~/.tmux.conf \\\; display \"Config reloaded!\"
+
+# Keep windows open after shell exits (preserves history and cwd)
+set -g remain-on-exit on
+set -g remain-on-exit-format \"Shell exited. Press any key to close.\"
+bind x kill-pane
 TMUX_EOF
-echo 'Tmux config installed successfully at ~/.tmux.conf'"
+echo 'Tmux config installed successfully. Windows now stay open after shell exits.'"
   exit 0
 fi
 
@@ -485,23 +510,53 @@ cleanup_and_save_state() {
     # Check if session still exists and is attachable
     if session_exists_remote "$SESSION_NAME" 2>/dev/null; then
       # Session still exists - we detached normally
-      save_session_state "$PROFILE" "$SESSION_NAME" "detached"
+      # Try to get the current working directory
+      local cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux display-message -p -t '$SESSION_NAME' '#{pane_current_path}' 2>/dev/null" || echo "")"
+      if [[ -n "$cwd" ]]; then
+        save_session_state "$PROFILE" "$SESSION_NAME" "detached" "$cwd"
+      else
+        save_session_state "$PROFILE" "$SESSION_NAME" "detached"
+      fi
     else
       # Session no longer exists - it was killed or the shell exited
-      save_session_state "$PROFILE" "$SESSION_NAME" "exited"
+      # Get the last known cwd from state file
+      local prev_state="$(get_session_state "$PROFILE" "$SESSION_NAME")"
+      local saved_cwd="$(echo "$prev_state" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4)"
+      if [[ -n "$saved_cwd" ]]; then
+        save_session_state "$PROFILE" "$SESSION_NAME" "exited" "$saved_cwd"
+      else
+        save_session_state "$PROFILE" "$SESSION_NAME" "exited"
+      fi
     fi
   fi
 }
 trap cleanup_and_save_state EXIT
+
+# Save working directory for a session
+save_session_cwd() {
+  local profile="$1"
+  local session="$2"
+  local cwd="$3"
+  local state_file="$(get_session_state_file "$profile" "$session")"
+  if [[ -f "$state_file" ]]; then
+    local content="$(cat "$state_file")"
+    # Update existing state file with cwd
+    local timestamp="$(echo "$content" | grep -o '"last_seen":"[^"]*"' | cut -d'"' -f4)"
+    local state="$(echo "$content" | grep -o '"state":"[^"]*"' | cut -d'"' -f4)"
+    echo "{\"session\":\"$session\",\"profile\":\"$profile\",\"state\":\"$state\",\"last_seen\":\"$timestamp\",\"cwd\":\"$cwd\"}" > "$state_file"
+  fi
+}
 
 # Resume session with tracking and reconnection logic
 do_resume_session() {
   local prev_state="$(get_session_state "$PROFILE" "$SESSION_NAME")"
   local last_state="unknown"
   local last_seen="never"
+  local saved_cwd=""
   if [[ -n "$prev_state" ]]; then
     last_state="$(echo "$prev_state" | grep -o '"state":"[^"]*"' | cut -d'"' -f4)"
     last_seen="$(echo "$prev_state" | grep -o '"last_seen":"[^"]*"' | cut -d'"' -f4)"
+    saved_cwd="$(echo "$prev_state" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4)"
   fi
 
   # Check if session exists on remote
@@ -519,18 +574,37 @@ do_resume_session() {
     echo "Attaching to tmux session '$SESSION_NAME'..."
     local TMUX_CMD="TERM=screen-256color tmux -u attach -t '$SESSION_NAME'"
     ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "$TMUX_CMD"
+    # Save cwd after detach
+    local current_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux display-message -p -t '$SESSION_NAME' '#{pane_current_path}' 2>/dev/null" || echo "")"
+    if [[ -n "$current_cwd" ]]; then
+      save_session_cwd "$PROFILE" "$SESSION_NAME" "$current_cwd"
+      save_session_state "$PROFILE" "$SESSION_NAME" "detached" "$current_cwd"
+    else
+      save_session_state "$PROFILE" "$SESSION_NAME" "detached"
+    fi
   else
     # Session doesn't exist - check if we have a record of it
     if [[ -n "$prev_state" ]]; then
       echo "Session '$SESSION_NAME' was last seen as '$last_state' at $last_seen"
+      if [[ -n "$saved_cwd" ]]; then
+        echo "  Last working directory: $saved_cwd"
+      fi
       echo "  Session no longer exists on remote (may have been killed or server restarted)"
     fi
     echo "Session '$SESSION_NAME' does not exist. Creating new session..."
-    local TMUX_CMD="TERM=screen-256color tmux -u new -s '$SESSION_NAME'"
+
+    # Create session with remain-on-exit enabled and restore cwd if available
+    local TMUX_CMD=""
+    if [[ -n "$saved_cwd" ]]; then
+      echo "Restoring working directory: $saved_cwd"
+      TMUX_CMD="TERM=screen-256color tmux -u new -s '$SESSION_NAME' -c '$saved_cwd'"
+    else
+      TMUX_CMD="TERM=screen-256color tmux -u new -s '$SESSION_NAME'"
+    fi
     ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "$TMUX_CMD"
+    # Mark session as attached after successful connection
+    save_session_state "$PROFILE" "$SESSION_NAME" "attached"
   fi
-  # Mark session as attached after successful connection
-  save_session_state "$PROFILE" "$SESSION_NAME" "attached"
 }
 
 echo "Connecting to $SSH_USER@$IP..."

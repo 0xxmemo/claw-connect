@@ -104,12 +104,14 @@ claw-connect -k mysession    # Kill session
 claw-connect --init-tmux     # Install tmux config on remote
 ```
 
+**Working directory & history preserved** — When you detach or your shell exits, claw-connect saves your last working directory. Reconnecting restores it automatically.
+
 ### Session Tracking
 
 Session state is automatically tracked per profile. Exited sessions that are still reachable on the remote will be reconnected automatically.
 
 ```bash
-claw-connect sessions                # List tracked session states
+claw-connect sessions                # List tracked session states (includes last CWD)
 claw-connect -p staging sessions     # Filter by profile
 claw-connect clean-sessions          # Remove stale session states
 ```
@@ -136,7 +138,7 @@ claw-connect -u root         # Override user
 | `-p, --profile NAME` | Use named profile |
 | `-u, --user USER` | Override SSH user |
 | `--update` | Update claw-connect to latest version |
-| `--init-tmux` | Install tmux config on remote |
+| `--init-tmux` | Install tmux config (enables `remain-on-exit` to preserve history) |
 | `--version` | Print version |
 | `-h, --help` | Show help |
 
