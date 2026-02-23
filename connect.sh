@@ -45,8 +45,10 @@ Options:
 Session Tracking:
   Sessions are automatically tracked when attached. Exited sessions that are
   still reachable (tmux can reattach) will be reconnected automatically.
+  Running claw-connect without flags defaults to resume mode.
 
 Examples:
+  claw-connect                    # Resume session (default)
   claw-connect setup
   claw-connect --tunnel
   claw-connect -p staging --vnc
@@ -532,6 +534,11 @@ do_resume_session() {
 }
 
 echo "Connecting to $SSH_USER@$IP..."
+# Default to resume mode if no explicit mode specified
+if [[ "$TUNNEL_MODE" == false && "$VNC_MODE" == false && "$RESUME_MODE" == false && "$LIST_MODE" == false && "$INIT_TMUX" == false ]]; then
+  RESUME_MODE=true
+fi
+
 if [[ "$RESUME_MODE" == true ]]; then
   do_resume_session
 else

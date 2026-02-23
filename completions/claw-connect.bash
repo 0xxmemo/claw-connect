@@ -4,7 +4,7 @@ _claw_connect() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  commands="setup profiles"
+  commands="setup profiles sessions clean-sessions"
   opts="-p --profile -t --tunnel -v --vnc -r --resume -l --list -k --kill -u --user --update --init-tmux --version -h --help"
 
   case "$prev" in

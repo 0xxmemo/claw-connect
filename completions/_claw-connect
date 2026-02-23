@@ -6,6 +6,8 @@ _claw-connect() {
   commands=(
     'setup:Interactive setup wizard'
     'profiles:List configured profiles'
+    'sessions:List tracked session states'
+    'clean-sessions:Remove stale session state files'
   )
 
   opts=(
@@ -15,8 +17,8 @@ _claw-connect() {
     '--tunnel[Create SSH tunnel (gateway + VNC)]'
     '-v[Direct VNC tunnel (raw protocol)]'
     '--vnc[Direct VNC tunnel (raw protocol)]'
-    '-r[Resume tmux session]:session:'
-    '--resume[Resume tmux session]:session:'
+    '-r[Resume tmux session (default)]'
+    '--resume[Resume tmux session (default)]'
     '-l[List remote tmux sessions]'
     '--list[List remote tmux sessions]'
     '-k[Kill tmux session]:session:'

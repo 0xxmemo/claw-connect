@@ -97,12 +97,24 @@ Tunnels `localhost:5900` for use with native VNC clients (TigerVNC, macOS Screen
 ### Tmux Sessions
 
 ```bash
-claw-connect -r              # Attach to "openclaw" session
+claw-connect                 # Attach to "openclaw" session (default)
 claw-connect -r mysession    # Attach to specific session
 claw-connect -l              # List sessions
 claw-connect -k mysession    # Kill session
 claw-connect --init-tmux     # Install tmux config on remote
 ```
+
+### Session Tracking
+
+Session state is automatically tracked per profile. Exited sessions that are still reachable on the remote will be reconnected automatically.
+
+```bash
+claw-connect sessions                # List tracked session states
+claw-connect -p staging sessions     # Filter by profile
+claw-connect clean-sessions          # Remove stale session states
+```
+
+When you run `claw-connect` without flags, it defaults to resume mode — automatically attaching to your last session or creating a new one.
 
 ### Plain SSH
 
@@ -115,9 +127,10 @@ claw-connect -u root         # Override user
 
 | Flag | Description |
 |------|-------------|
+| *(none)* | Default: resume tmux session |
 | `-t, --tunnel` | SSH tunnel (gateway on `:18789` + `/vnc` viewer) |
 | `-v, --vnc` | Direct VNC tunnel (`:5900`, needs VNC client) |
-| `-r, --resume [NAME]` | Attach/create tmux session |
+| `-r, --resume [NAME]` | Attach/create tmux session (default: "openclaw") |
 | `-l, --list` | List remote tmux sessions |
 | `-k, --kill NAME` | Kill remote tmux session |
 | `-p, --profile NAME` | Use named profile |
@@ -126,6 +139,15 @@ claw-connect -u root         # Override user
 | `--init-tmux` | Install tmux config on remote |
 | `--version` | Print version |
 | `-h, --help` | Show help |
+
+## Session Management Commands
+
+| Command | Description |
+|---------|-------------|
+| `sessions` | List tracked session states (all profiles) |
+| `sessions -p NAME` | List sessions for a specific profile |
+| `clean-sessions` | Remove stale session states |
+| `clean-sessions -p NAME` | Clean sessions for a specific profile |
 
 ## Requirements
 
