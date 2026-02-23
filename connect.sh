@@ -556,6 +556,12 @@ save_session_cwd() {
   fi
 }
 
+# Enable remain-on-exit for a session (keeps window when shell exits)
+enable_remain_on_exit() {
+  local session="$1"
+  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux set-option -t '$session' remain-on-exit on 2>/dev/null" || true
+}
+
 # Resume session with tracking and reconnection logic
 do_resume_session() {
   set +e
@@ -588,7 +594,8 @@ do_resume_session() {
       fi
     fi
     echo "Attaching to tmux session '$SESSION_NAME'..."
-    # Attach to existing session
+    # Ensure remain-on-exit is enabled, then attach
+    enable_remain_on_exit "$SESSION_NAME"
     ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -t '$SESSION_NAME'"
   else
     # Session doesn't exist - create it
@@ -607,11 +614,13 @@ do_resume_session() {
       echo "Creating new tmux session '$SESSION_NAME'..."
       ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -d -s '$SESSION_NAME' -n bash 'exec bash -l'"
     fi
+    # Enable remain-on-exit on the new session
+    enable_remain_on_exit "$SESSION_NAME"
     # Now attach to the newly created session
     ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -t '$SESSION_NAME'"
   fi
 
-  # Save cwd after detach
+  # Save cwd after detach (session still exists thanks to remain-on-exit)
   local current_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux display-message -p -t '$SESSION_NAME' '#{pane_current_path}' 2>/dev/null" || echo "")"
   if [[ -n "$current_cwd" ]]; then
     save_session_cwd "$PROFILE" "$SESSION_NAME" "$current_cwd"
