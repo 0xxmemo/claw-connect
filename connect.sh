@@ -103,13 +103,20 @@ get_session_cwd() {
 # Check if a session exists on remote (reachable for reattach)
 session_exists_remote() {
   local session="$1"
-  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux has-session -t '$session' 2>/dev/null" && return 0 || return 1
+  set +e
+  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux has-session -t '$session' 2>/dev/null"
+  local result=$?
+  set -e
+  return $result
 }
 
 # Get session status from remote (attached/detached/exited)
 get_remote_session_status() {
   local session="$1"
-  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null | grep '^$session ' | awk '{print \$2}'" || echo ""
+  set +e
+  local output="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null | grep '^$session ' | awk '{print \$2}'")"
+  set -e
+  echo "${output:-}"
 }
 
 run_setup() {
@@ -508,6 +515,7 @@ fi
 cleanup_and_save_state() {
   if [[ "$RESUME_MODE" == true && -n "$SESSION_NAME" ]]; then
     # Check if session still exists and is attachable
+    set +e
     if session_exists_remote "$SESSION_NAME" 2>/dev/null; then
       # Session still exists - we detached normally
       # Try to get the current working directory
@@ -528,6 +536,7 @@ cleanup_and_save_state() {
         save_session_state "$PROFILE" "$SESSION_NAME" "exited"
       fi
     fi
+    set -e
   fi
 }
 trap cleanup_and_save_state EXIT
@@ -549,14 +558,15 @@ save_session_cwd() {
 
 # Resume session with tracking and reconnection logic
 do_resume_session() {
+  set +e
   local prev_state="$(get_session_state "$PROFILE" "$SESSION_NAME")"
   local last_state="unknown"
   local last_seen="never"
   local saved_cwd=""
   if [[ -n "$prev_state" ]]; then
-    last_state="$(echo "$prev_state" | grep -o '"state":"[^"]*"' | cut -d'"' -f4)"
-    last_seen="$(echo "$prev_state" | grep -o '"last_seen":"[^"]*"' | cut -d'"' -f4)"
-    saved_cwd="$(echo "$prev_state" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4)"
+    last_state="$(echo "$prev_state" | grep -o '"state":"[^"]*"' | cut -d'"' -f4 || echo "")"
+    last_seen="$(echo "$prev_state" | grep -o '"last_seen":"[^"]*"' | cut -d'"' -f4 || echo "")"
+    saved_cwd="$(echo "$prev_state" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4 || echo "")"
   fi
 
   # Check if session exists on remote
@@ -605,6 +615,7 @@ do_resume_session() {
     # Mark session as attached after successful connection
     save_session_state "$PROFILE" "$SESSION_NAME" "attached"
   fi
+  set -e
 }
 
 echo "Connecting to $SSH_USER@$IP..."
@@ -615,6 +626,7 @@ fi
 
 if [[ "$RESUME_MODE" == true ]]; then
   do_resume_session
+  exit 0
 else
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP"
 fi
