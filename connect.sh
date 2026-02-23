@@ -13,6 +13,7 @@ while [[ -L "$SOURCE" ]]; do
 done
 SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 CONFIG_DIR="$HOME/.config/claw-connect"
+SESSION_STATE_DIR="$CONFIG_DIR/sessions"
 PROFILE="default"
 VERSION="$(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null || echo "dev")"
 
@@ -25,6 +26,8 @@ Usage: claw-connect [options] [command]
 Commands:
   setup [PROFILE]         Interactive setup wizard (default profile: "default")
   profiles                List configured profiles
+  sessions                List tracked session states
+  clean-sessions          Remove stale session state files
 
 Options:
   -p, --profile PROFILE   Use a named profile (default: "default")
@@ -39,12 +42,56 @@ Options:
       --version           Print version
   -h, --help              Show this help message
 
+Session Tracking:
+  Sessions are automatically tracked when attached. Exited sessions that are
+  still reachable (tmux can reattach) will be reconnected automatically.
+
 Examples:
   claw-connect setup
   claw-connect --tunnel
   claw-connect -p staging --vnc
   claw-connect --resume
 EOF
+}
+
+# Session tracking functions
+get_session_state_file() {
+  local profile="$1"
+  local session="$2"
+  mkdir -p "$SESSION_STATE_DIR"
+  echo "$SESSION_STATE_DIR/${profile}__${session}.state"
+}
+
+save_session_state() {
+  local profile="$1"
+  local session="$2"
+  local state="$3"  # "attached", "detached", "exited"
+  local timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local state_file="$(get_session_state_file "$profile" "$session")"
+  echo "{\"session\":\"$session\",\"profile\":\"$profile\",\"state\":\"$state\",\"last_seen\":\"$timestamp\"}" > "$state_file"
+}
+
+get_session_state() {
+  local profile="$1"
+  local session="$2"
+  local state_file="$(get_session_state_file "$profile" "$session")"
+  if [[ -f "$state_file" ]]; then
+    cat "$state_file"
+  else
+    echo ""
+  fi
+}
+
+# Check if a session exists on remote (reachable for reattach)
+session_exists_remote() {
+  local session="$1"
+  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux has-session -t '$session' 2>/dev/null" && return 0 || return 1
+}
+
+# Get session status from remote (attached/detached/exited)
+get_remote_session_status() {
+  local session="$1"
+  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null | grep '^$session ' | awk '{print \$2}'" || echo ""
 }
 
 run_setup() {
@@ -126,6 +173,99 @@ list_profiles() {
   exit 0
 }
 
+list_sessions() {
+  echo "Tracked session states:"
+  if [[ "$PROFILE" != "default" ]]; then
+    echo "Profile filter: $PROFILE"
+  fi
+  echo ""
+  local found=false
+  if [[ -d "$SESSION_STATE_DIR" ]]; then
+    for state_file in "$SESSION_STATE_DIR"/*.state; do
+      [[ -f "$state_file" ]] || continue
+      local content profile_name session_name state last_seen
+      content="$(cat "$state_file")"
+      profile_name="$(echo "$content" | grep -o '"profile":"[^"]*"' | cut -d'"' -f4)"
+      session_name="$(echo "$content" | grep -o '"session":"[^"]*"' | cut -d'"' -f4)"
+      state="$(echo "$content" | grep -o '"state":"[^"]*"' | cut -d'"' -f4)"
+      last_seen="$(echo "$content" | grep -o '"last_seen":"[^"]*"' | cut -d'"' -f4)"
+
+      # Filter by profile if specified
+      if [[ "$PROFILE" != "default" && "$profile_name" != "$PROFILE" ]]; then
+        continue
+      fi
+
+      echo "  $profile_name / $session_name"
+      echo "    State: $state, Last seen: $last_seen"
+      found=true
+    done
+  fi
+  if [[ "$found" == false ]]; then
+    if [[ "$PROFILE" != "default" ]]; then
+      echo "  (no tracked sessions for profile '$PROFILE')"
+    else
+      echo "  (no tracked sessions)"
+    fi
+  fi
+  exit 0
+}
+
+clean_sessions() {
+  echo "Cleaning stale session state files..."
+  if [[ "$PROFILE" != "default" ]]; then
+    echo "Profile filter: $PROFILE"
+  fi
+  echo ""
+  local removed=0
+  if [[ -d "$SESSION_STATE_DIR" ]]; then
+    for state_file in "$SESSION_STATE_DIR"/*.state; do
+      [[ -f "$state_file" ]] || continue
+      local content profile_name session_name
+      content="$(cat "$state_file")"
+      profile_name="$(echo "$content" | grep -o '"profile":"[^"]*"' | cut -d'"' -f4)"
+      session_name="$(echo "$content" | grep -o '"session":"[^"]*"' | cut -d'"' -f4)"
+
+      # Filter by profile if specified
+      if [[ "$PROFILE" != "default" && "$profile_name" != "$PROFILE" ]]; then
+        continue
+      fi
+
+      # Check if profile still exists
+      local profile_dir="$CONFIG_DIR/profiles/$profile_name"
+      if [[ ! -d "$profile_dir" ]]; then
+        echo "  Removing: $profile_name / $session_name (profile no longer exists)"
+        rm -f "$state_file"
+        ((removed++))
+        continue
+      fi
+
+      # Load profile config for SSH access
+      source "$profile_dir/config"
+      [[ -f "$profile_dir/cred.pem" ]] || { echo "  Skipping: $profile_name / $session_name (PEM not found)"; continue; }
+      SSH_USER="${SSH_USER:-ubuntu}"
+
+      # Build SSH opts for this profile
+      local clean_ssh_opts=(
+        -i "$profile_dir/cred.pem"
+        -o "StrictHostKeyChecking=no"
+        -o "UserKnownHostsFile=/dev/null"
+        -o "LogLevel=ERROR"
+        -o "ConnectTimeout=5"
+      )
+
+      # Check if session exists on remote
+      if ! ssh "${clean_ssh_opts[@]}" "$SSH_USER@$IP" "tmux has-session -t '$session_name' 2>/dev/null" 2>/dev/null; then
+        echo "  Removing: $profile_name / $session_name (session no longer exists on remote)"
+        rm -f "$state_file"
+        ((removed++))
+      fi
+    done
+  fi
+  echo ""
+  echo "Removed $removed stale session state file(s)."
+  exit 0
+}
+
 TUNNEL_MODE=false
 VNC_MODE=false
 RESUME_MODE=false
@@ -133,12 +273,16 @@ LIST_MODE=false
 INIT_TMUX=false
 SETUP_MODE=false
 PROFILES_MODE=false
+SESSIONS_MODE=false
+CLEAN_SESSIONS_MODE=false
 KILL_SESSION=""
 SESSION_NAME="openclaw"
 
 case "${1:-}" in
   setup) SETUP_MODE=true; shift ;;
   profiles) PROFILES_MODE=true; shift ;;
+  sessions) SESSIONS_MODE=true; shift ;;
+  clean-sessions) CLEAN_SESSIONS_MODE=true; shift ;;
 esac
 
 while [[ $# -gt 0 ]]; do
@@ -170,6 +314,8 @@ done
 
 [[ "$PROFILES_MODE" == true ]] && list_profiles
 [[ "$SETUP_MODE" == true ]] && run_setup "$PROFILE"
+[[ "$SESSIONS_MODE" == true ]] && list_sessions
+[[ "$CLEAN_SESSIONS_MODE" == true ]] && clean_sessions
 
 PROFILE_DIR="$CONFIG_DIR/profiles/$PROFILE"
 if [[ ! -f "$PROFILE_DIR/config" ]]; then
@@ -331,11 +477,63 @@ PY
   exit 0
 fi
 
+# Handle session tracking on script exit
+cleanup_and_save_state() {
+  if [[ "$RESUME_MODE" == true && -n "$SESSION_NAME" ]]; then
+    # Check if session still exists and is attachable
+    if session_exists_remote "$SESSION_NAME" 2>/dev/null; then
+      # Session still exists - we detached normally
+      save_session_state "$PROFILE" "$SESSION_NAME" "detached"
+    else
+      # Session no longer exists - it was killed or the shell exited
+      save_session_state "$PROFILE" "$SESSION_NAME" "exited"
+    fi
+  fi
+}
+trap cleanup_and_save_state EXIT
+
+# Resume session with tracking and reconnection logic
+do_resume_session() {
+  local prev_state="$(get_session_state "$PROFILE" "$SESSION_NAME")"
+  local last_state="unknown"
+  local last_seen="never"
+  if [[ -n "$prev_state" ]]; then
+    last_state="$(echo "$prev_state" | grep -o '"state":"[^"]*"' | cut -d'"' -f4)"
+    last_seen="$(echo "$prev_state" | grep -o '"last_seen":"[^"]*"' | cut -d'"' -f4)"
+  fi
+
+  # Check if session exists on remote
+  if session_exists_remote "$SESSION_NAME"; then
+    local remote_status="$(get_remote_session_status "$SESSION_NAME")"
+    if [[ -n "$remote_status" && "$remote_status" -gt 0 ]]; then
+      echo "Session '$SESSION_NAME' is already attached elsewhere ($remote_status client(s))."
+      echo "Attaching anyway (may create nested session)..."
+    else
+      echo "Session '$SESSION_NAME' exists and is reachable (detached)."
+      if [[ "$last_state" == "exited" ]]; then
+        echo "  (Previously marked as exited at $last_seen - session was recovered)"
+      fi
+    fi
+    echo "Attaching to tmux session '$SESSION_NAME'..."
+    local TMUX_CMD="TERM=screen-256color tmux -u attach -t '$SESSION_NAME'"
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "$TMUX_CMD"
+  else
+    # Session doesn't exist - check if we have a record of it
+    if [[ -n "$prev_state" ]]; then
+      echo "Session '$SESSION_NAME' was last seen as '$last_state' at $last_seen"
+      echo "  Session no longer exists on remote (may have been killed or server restarted)"
+    fi
+    echo "Session '$SESSION_NAME' does not exist. Creating new session..."
+    local TMUX_CMD="TERM=screen-256color tmux -u new -s '$SESSION_NAME'"
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "$TMUX_CMD"
+  fi
+  # Mark session as attached after successful connection
+  save_session_state "$PROFILE" "$SESSION_NAME" "attached"
+}
+
 echo "Connecting to $SSH_USER@$IP..."
 if [[ "$RESUME_MODE" == true ]]; then
-  echo "Attaching to tmux session '$SESSION_NAME' (or creating new one)..."
-  TMUX_CMD="TERM=screen-256color tmux -u attach -t '$SESSION_NAME' 2>/dev/null || TERM=screen-256color tmux -u new -s '$SESSION_NAME'"
-  ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "$TMUX_CMD"
+  do_resume_session
 else
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP"
 fi
