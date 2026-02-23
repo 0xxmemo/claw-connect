@@ -68,7 +68,7 @@ save_session_state() {
   local profile="$1"
   local session="$2"
   local state="$3"  # "attached", "detached", "exited"
-  local cwd="$4"   # optional: last working directory
+  local cwd="${4:-}"   # optional: last working directory
   local timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local state_file="$(get_session_state_file "$profile" "$session")"
   local cwd_json=""
