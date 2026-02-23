@@ -19,6 +19,8 @@ _claw-connect() {
     '--vnc[Direct VNC tunnel (raw protocol)]'
     '-r[Resume tmux session (default)]'
     '--resume[Resume tmux session (default)]'
+    '-s[Connect to specific session (create or join)]'
+    '--session[Connect to specific session (create or join)]'
     '-l[List remote tmux sessions]'
     '--list[List remote tmux sessions]'
     '-k[Kill tmux session]:session:'

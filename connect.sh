@@ -39,6 +39,7 @@ Options:
   -u, --user USER         Override SSH user
       --update            Update claw-connect to latest version (git pull)
       --init-tmux         Install optimized tmux config on remote
+  -s, --session NAME      Connect to specific session (create or join)
       --version           Print version
   -h, --help              Show this help message
 
@@ -92,9 +93,19 @@ get_session_state() {
 get_session_cwd() {
   local profile="$1"
   local session="$2"
+  # First try to get CWD from state file
   local state="$(get_session_state "$profile" "$session")"
   if [[ -n "$state" ]]; then
-    echo "$state" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4 || echo ""
+    local cwd="$(echo "$state" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4)"
+    if [[ -n "$cwd" ]]; then
+      echo "$cwd"
+      return
+    fi
+  fi
+  # Fallback: check cwd directory on remote (from bash EXIT hook)
+  local remote_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat ~/.config/claw-connect/cwd/${session}.cwd 2>/dev/null" || echo "")"
+  if [[ -n "$remote_cwd" ]]; then
+    echo "$remote_cwd"
   else
     echo ""
   fi
@@ -306,6 +317,7 @@ SESSIONS_MODE=false
 CLEAN_SESSIONS_MODE=false
 KILL_SESSION=""
 SESSION_NAME="openclaw"
+SPECIFIC_SESSION=""
 
 case "${1:-}" in
   setup) SETUP_MODE=true; shift ;;
@@ -323,6 +335,11 @@ while [[ $# -gt 0 ]]; do
     -r|--resume)
       RESUME_MODE=true
       if [[ -n "${2:-}" && "$2" != -* ]]; then SESSION_NAME="$2"; shift 2; else shift; fi
+      ;;
+    -s|--session)
+      SPECIFIC_SESSION="${2:-}"
+      [[ -n "$SPECIFIC_SESSION" ]] || { echo "Error: --session requires a session name"; exit 1; }
+      shift 2
       ;;
     -l|--list) LIST_MODE=true; shift ;;
     -k|--kill)
@@ -401,8 +418,8 @@ if [[ -n "$KILL_SESSION" ]]; then
   exit 0
 fi
 
-if [[ "$INIT_TMUX" == true ]]; then
-  echo "Installing optimized tmux config on $SSH_USER@$IP..."
+# Install tmux config silently (called automatically on connect)
+install_tmux_config() {
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat > ~/.tmux.conf << 'TMUX_EOF'
 set -sg escape-time 10
 set -g history-limit 50000
@@ -423,20 +440,14 @@ bind h select-pane -L
 bind j select-pane -D
 bind k select-pane -U
 bind l select-pane -R
-bind r source-file ~/.tmux.conf \\\; display \"Config reloaded!\"
 
-# Keep session alive when shell exits (claw-connect will handle respawn)
-set-option -g remain-on-exit on
-set-option -g remain-on-exit-format \"[exited]\"
-
-# Use Ctrl+a as prefix (different from local macOS default of Ctrl+b)
-unbind C-b
-set -g prefix C-a
-bind C-a send-prefix
+# Don't keep dead panes - session ends cleanly on exit
+set-option -g remain-on-exit off
 TMUX_EOF
 
-# Add shell hook to save CWD on exit
-cat >> ~/.bashrc << 'BASH_EOF'
+# Add shell hook to save CWD on exit (idempotent - check if already present)
+if ! grep -q '_claw_save_state' ~/.bashrc 2>/dev/null; then
+  cat >> ~/.bashrc << 'BASH_EOF'
 
 # Save CWD when shell exits (for claw-connect session tracking)
 _claw_save_state() {
@@ -448,11 +459,17 @@ _claw_save_state() {
 }
 trap _claw_save_state EXIT
 BASH_EOF
+fi
+" 2>/dev/null
+}
 
-echo 'Tmux config installed successfully.'
-echo '  - Sessions persist after shell exit (remain-on-exit)'
-echo '  - claw-connect auto-respawns dead shells on connect'
-echo '  - Prefix key: Ctrl+a (avoids conflicts with local tmux)'"
+if [[ "$INIT_TMUX" == true ]]; then
+  echo "Installing optimized tmux config on $SSH_USER@$IP..."
+  install_tmux_config
+  echo 'Tmux config installed successfully.'
+  echo '  - No dead panes on exit (clean session close)'
+  echo '  - CWD saved on exit, restored on reconnect'
+  echo '  - Prefix key: Ctrl+a (avoids conflicts with local tmux)'
   exit 0
 fi
 
@@ -600,14 +617,22 @@ respawn_dead_pane() {
 # Resume session with tracking and reconnection logic
 do_resume_session() {
   set +e
+  # Auto-install tmux config on first connect (silent, idempotent)
+  install_tmux_config
+
   local prev_state="$(get_session_state "$PROFILE" "$SESSION_NAME")"
   local last_state="unknown"
   local last_seen="never"
   local saved_cwd=""
+  # Get saved CWD from state file first, then try remote cwd file
   if [[ -n "$prev_state" ]]; then
     last_state="$(echo "$prev_state" | grep -o '"state":"[^"]*"' | cut -d'"' -f4 || echo "")"
     last_seen="$(echo "$prev_state" | grep -o '"last_seen":"[^"]*"' | cut -d'"' -f4 || echo "")"
     saved_cwd="$(echo "$prev_state" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4 || echo "")"
+  fi
+  # Fallback: check remote cwd file (from bash EXIT hook)
+  if [[ -z "$saved_cwd" ]]; then
+    saved_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat ~/.config/claw-connect/cwd/${SESSION_NAME}.cwd 2>/dev/null" || echo "")"
   fi
 
   # Check if session exists on remote
@@ -634,20 +659,17 @@ do_resume_session() {
     # Use -d to detach other clients (prevents nested tmux issues)
     ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -d -t '$SESSION_NAME'"
   else
-    # Session doesn't exist - create it
+    # Session doesn't exist - create it (clean exit or first time)
     if [[ -n "$prev_state" ]]; then
       echo "Session '$SESSION_NAME' was last seen as '$last_state' at $last_seen"
       if [[ -n "$saved_cwd" ]]; then
-        echo "  Last working directory: $saved_cwd"
-        echo "Creating new tmux session '$SESSION_NAME' in: $saved_cwd"
-        # Create session in detached mode with bash, then attach
-        ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -d -s '$SESSION_NAME' -c '$saved_cwd' -n bash 'exec bash -l'"
-      else
-        echo "Creating new tmux session '$SESSION_NAME'..."
-        ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -d -s '$SESSION_NAME' -n bash 'exec bash -l'"
+        echo "  Restoring working directory: $saved_cwd"
       fi
+    fi
+    echo "Creating new tmux session '$SESSION_NAME'..."
+    if [[ -n "$saved_cwd" ]]; then
+      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -d -s '$SESSION_NAME' -c '$saved_cwd' -n bash 'exec bash -l'"
     else
-      echo "Creating new tmux session '$SESSION_NAME'..."
       ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -d -s '$SESSION_NAME' -n bash 'exec bash -l'"
     fi
     # Now attach to the newly created session
@@ -667,8 +689,15 @@ do_resume_session() {
 
 echo "Connecting to $SSH_USER@$IP..."
 # Default to resume mode if no explicit mode specified
-if [[ "$TUNNEL_MODE" == false && "$VNC_MODE" == false && "$RESUME_MODE" == false && "$LIST_MODE" == false && "$INIT_TMUX" == false ]]; then
+if [[ "$TUNNEL_MODE" == false && "$VNC_MODE" == false && "$RESUME_MODE" == false && "$LIST_MODE" == false && "$INIT_TMUX" == false && -z "$SPECIFIC_SESSION" ]]; then
   RESUME_MODE=true
+fi
+
+# Handle specific session flag (create or join)
+if [[ -n "$SPECIFIC_SESSION" ]]; then
+  SESSION_NAME="$SPECIFIC_SESSION"
+  do_resume_session
+  exit 0
 fi
 
 if [[ "$RESUME_MODE" == true ]]; then

@@ -5,7 +5,7 @@ _claw_connect() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
   commands="setup profiles sessions clean-sessions"
-  opts="-p --profile -t --tunnel -v --vnc -r --resume -l --list -k --kill -u --user --update --init-tmux --version -h --help"
+  opts="-p --profile -t --tunnel -v --vnc -r --resume -s --session -l --list -k --kill -u --user --update --init-tmux --version -h --help"
 
   case "$prev" in
     -p|--profile)
@@ -15,7 +15,7 @@ _claw_connect() {
       fi
       return
       ;;
-    -k|--kill|-r|--resume|-u|--user)
+    -k|--kill|-r|--resume|-s|--session|-u|--user)
       return
       ;;
   esac

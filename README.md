@@ -99,6 +99,7 @@ Tunnels `localhost:5900` for use with native VNC clients (TigerVNC, macOS Screen
 ```bash
 claw-connect                 # Attach to "openclaw" session (default)
 claw-connect -r mysession    # Attach to specific session
+claw-connect -s mysession    # Connect to specific session (create or join)
 claw-connect -l              # List sessions
 claw-connect -k mysession    # Kill session
 claw-connect --init-tmux     # Install tmux config on remote
@@ -110,9 +111,22 @@ claw-connect --init-tmux     # Install tmux config on remote
 
 **Working directory & history preserved** — When you detach or your shell exits, claw-connect saves your last working directory. Reconnecting restores it automatically.
 
-**Tip:** If running from inside a local tmux session, use a different prefix key for the remote session:
-- Local: `Ctrl+b` (default)
-- Remote: `Ctrl+a` (set via `--init-tmux`)
+**Tmux Cheatsheet** — Prefix key: `Ctrl+b`
+
+| Action | Keys |
+|--------|------|
+| Show all shortcuts | `Ctrl+b ?` |
+| New window | `Ctrl+b c` |
+| Next window | `Ctrl+b n` |
+| Previous window | `Ctrl+b p` |
+| Last window | `Ctrl+b l` |
+| Select window by number | `Ctrl+b 0-9` |
+| Split pane vertical | `Ctrl+b %` |
+| Split pane horizontal | `Ctrl+b "` |
+| Switch panes | `Ctrl+b arrow keys` |
+| Zoom pane | `Ctrl+b z` |
+| Detach session | `Ctrl+b d` |
+| Command prompt | `Ctrl+b :` |
 
 ### Session Tracking
 
@@ -141,12 +155,13 @@ claw-connect -u root         # Override user
 | `-t, --tunnel` | SSH tunnel (gateway on `:18789` + `/vnc` viewer) |
 | `-v, --vnc` | Direct VNC tunnel (`:5900`, needs VNC client) |
 | `-r, --resume [NAME]` | Attach/create tmux session (default: "openclaw") |
+| `-s, --session NAME` | Connect to specific session (create if doesn't exist, or join) |
 | `-l, --list` | List remote tmux sessions |
 | `-k, --kill NAME` | Kill remote tmux session |
 | `-p, --profile NAME` | Use named profile |
 | `-u, --user USER` | Override SSH user |
 | `--update` | Update claw-connect to latest version |
-| `--init-tmux` | Install tmux config (enables `remain-on-exit` to preserve history) |
+| `--init-tmux` | Install tmux config on remote |
 | `--version` | Print version |
 | `-h, --help` | Show help |
 
