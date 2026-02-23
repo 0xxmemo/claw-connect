@@ -106,7 +106,13 @@ claw-connect --init-tmux     # Install tmux config on remote
 
 **Session auto-create** — Uses `tmux new-session -A` which attaches if the session exists or creates it if not. No manual session management needed.
 
+**Auto-detach other clients** — When attaching, any existing clients are automatically detached to prevent nested tmux issues.
+
 **Working directory & history preserved** — When you detach or your shell exits, claw-connect saves your last working directory. Reconnecting restores it automatically.
+
+**Tip:** If running from inside a local tmux session, use a different prefix key for the remote session:
+- Local: `Ctrl+b` (default)
+- Remote: `Ctrl+a` (set via `--init-tmux`)
 
 ### Session Tracking
 

@@ -429,8 +429,16 @@ bind r source-file ~/.tmux.conf \\\; display \"Config reloaded!\"
 set -g remain-on-exit on
 set -g remain-on-exit-format \"Shell exited. Press any key to close.\"
 bind x kill-pane
+
+# Use Ctrl+a as prefix (different from local macOS default of Ctrl+b)
+# This prevents conflicts when running remote tmux inside local tmux
+unbind C-b
+set -g prefix C-a
+bind C-a send-prefix
 TMUX_EOF
-echo 'Tmux config installed successfully. Windows now stay open after shell exits.'"
+echo 'Tmux config installed successfully.'
+echo '  - Windows stay open after shell exits (remain-on-exit)'
+echo '  - Prefix key: Ctrl+a (avoids conflicts with local tmux)'"
   exit 0
 fi
 
@@ -585,8 +593,8 @@ do_resume_session() {
   if [[ "$session_exists" == true ]]; then
     local remote_status="$(get_remote_session_status "$SESSION_NAME")"
     if [[ -n "$remote_status" && "$remote_status" -gt 0 ]]; then
-      echo "Session '$SESSION_NAME' is already attached elsewhere ($remote_status client(s))."
-      echo "Attaching anyway (may create nested session)..."
+      echo "Session '$SESSION_NAME' has $remote_status client(s) attached."
+      echo "Detaching other clients and attaching..."
     else
       echo "Session '$SESSION_NAME' exists and is reachable (detached)."
       if [[ "$last_state" == "exited" ]]; then
@@ -595,8 +603,9 @@ do_resume_session() {
     fi
     echo "Attaching to tmux session '$SESSION_NAME'..."
     # Ensure remain-on-exit is enabled, then attach
+    # Use -d to detach other clients (prevents nested tmux issues)
     enable_remain_on_exit "$SESSION_NAME"
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -t '$SESSION_NAME'"
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -d -t '$SESSION_NAME'"
   else
     # Session doesn't exist - create it
     if [[ -n "$prev_state" ]]; then
