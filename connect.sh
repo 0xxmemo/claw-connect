@@ -425,19 +425,33 @@ bind k select-pane -U
 bind l select-pane -R
 bind r source-file ~/.tmux.conf \\\; display \"Config reloaded!\"
 
-# Keep windows open after shell exits (preserves history and cwd)
-set -g remain-on-exit on
-set -g remain-on-exit-format \"Shell exited. Press any key to close.\"
-bind x kill-pane
+# Keep session alive when shell exits (claw-connect will handle respawn)
+set-option -g remain-on-exit on
+set-option -g remain-on-exit-format \"[exited]\"
 
 # Use Ctrl+a as prefix (different from local macOS default of Ctrl+b)
-# This prevents conflicts when running remote tmux inside local tmux
 unbind C-b
 set -g prefix C-a
 bind C-a send-prefix
 TMUX_EOF
+
+# Add shell hook to save CWD on exit
+cat >> ~/.bashrc << 'BASH_EOF'
+
+# Save CWD when shell exits (for claw-connect session tracking)
+_claw_save_state() {
+  local session=\"\$(tmux display-message -p '#S' 2>/dev/null)\"
+  if [[ -n \"\$session\" ]]; then
+    mkdir -p ~/.config/claw-connect/cwd 2>/dev/null
+    echo \"\$PWD\" > \"\$HOME/.config/claw-connect/cwd/\${session}.cwd\" 2>/dev/null
+  fi
+}
+trap _claw_save_state EXIT
+BASH_EOF
+
 echo 'Tmux config installed successfully.'
-echo '  - Windows stay open after shell exits (remain-on-exit)'
+echo '  - Sessions persist after shell exit (remain-on-exit)'
+echo '  - claw-connect auto-respawns dead shells on connect'
 echo '  - Prefix key: Ctrl+a (avoids conflicts with local tmux)'"
   exit 0
 fi
@@ -564,12 +578,6 @@ save_session_cwd() {
   fi
 }
 
-# Enable remain-on-exit for a session (keeps window when shell exits)
-enable_remain_on_exit() {
-  local session="$1"
-  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux set-option -t '$session' remain-on-exit on 2>/dev/null" || true
-}
-
 # Check if pane is dead and respawn it with a new shell
 respawn_dead_pane() {
   local session="$1"
@@ -621,9 +629,7 @@ do_resume_session() {
       fi
     fi
     echo "Attaching to tmux session '$SESSION_NAME'..."
-    # Ensure remain-on-exit is enabled
-    enable_remain_on_exit "$SESSION_NAME"
-    # Check if pane is dead and respawn it before attaching
+    # Check if pane is dead and respawn it BEFORE attaching
     respawn_dead_pane "$SESSION_NAME" "$saved_cwd"
     # Use -d to detach other clients (prevents nested tmux issues)
     ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -d -t '$SESSION_NAME'"
@@ -644,13 +650,11 @@ do_resume_session() {
       echo "Creating new tmux session '$SESSION_NAME'..."
       ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -d -s '$SESSION_NAME' -n bash 'exec bash -l'"
     fi
-    # Enable remain-on-exit on the new session
-    enable_remain_on_exit "$SESSION_NAME"
     # Now attach to the newly created session
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -t '$SESSION_NAME'"
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -d -t '$SESSION_NAME'"
   fi
 
-  # Save cwd after detach (session still exists thanks to remain-on-exit)
+  # Save cwd after detach
   local current_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux display-message -p -t '$SESSION_NAME' '#{pane_current_path}' 2>/dev/null" || echo "")"
   if [[ -n "$current_cwd" ]]; then
     save_session_cwd "$PROFILE" "$SESSION_NAME" "$current_cwd"
