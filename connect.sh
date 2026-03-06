@@ -421,36 +421,11 @@ fi
 # Install tmux config silently (called automatically on connect)
 install_tmux_config() {
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat > ~/.tmux.conf << 'TMUX_EOF'
-# --- Terminal ---
-set -g default-terminal \"screen-256color\"
-set -ga terminal-overrides \",*256col*:Tc\"
-
-# --- General ---
-set -sg escape-time 0
+# Minimal config — behave like a normal terminal, only add session persistence
+set -g default-terminal \"\$TERM\"
+set -g escape-time 0
 set -g history-limit 50000
-set -g display-time 4000
-set -g status-interval 5
-set -g base-index 1
-setw -g pane-base-index 1
-set -g renumber-windows on
-set -g focus-events on
-
-# --- Mouse off: native terminal select + Cmd+C works like regular SSH ---
 set -g mouse off
-
-# --- Pane navigation ---
-bind h select-pane -L
-bind j select-pane -D
-bind k select-pane -U
-bind l select-pane -R
-
-# --- Status bar ---
-set -g status-style bg=black,fg=white
-set -g status-left-length 40
-set -g status-left \"#[fg=green]#S #[fg=yellow]#I #[fg=cyan]#P\"
-set -g status-right \"#[fg=cyan]%d %b %R\"
-
-# --- Session behavior ---
 set-option -g remain-on-exit off
 TMUX_EOF
 
