@@ -17,6 +17,8 @@ SESSION_STATE_DIR="$CONFIG_DIR/sessions"
 PROFILE="default"
 VERSION="$(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null || echo "dev")"
 
+DTACH_SESSION_DIR="~/.local/share/claw-connect/sessions"
+
 usage() {
   cat << 'EOF'
 Claw Connect — Remote OpenClaw gateway helper
@@ -33,20 +35,20 @@ Options:
   -p, --profile PROFILE   Use a named profile (default: "default")
   -t, --tunnel            Create SSH tunnel (gateway + VNC on /vnc route)
   -v, --vnc               Direct VNC tunnel (raw protocol, needs VNC client)
-  -r, --resume [SESSION]  Resume/attach to tmux session (default: openclaw)
-  -l, --list              List all remote tmux sessions
-  -k, --kill SESSION      Kill a specific tmux session
+  -r, --resume [SESSION]  Resume/attach to session (default: openclaw)
+  -l, --list              List all remote sessions
+  -k, --kill SESSION      Kill a specific remote session
   -u, --user USER         Override SSH user
       --update            Update claw-connect to latest version (git pull)
-      --init-tmux         Install optimized tmux config on remote
   -s, --session NAME      Connect to specific session (create or join)
       --version           Print version
   -h, --help              Show this help message
 
 Session Tracking:
-  Sessions are automatically tracked when attached. Exited sessions that are
-  still reachable (tmux can reattach) will be reconnected automatically.
+  Sessions are automatically tracked when attached. Disconnected sessions
+  persist on the remote and will be reattached automatically.
   Running claw-connect without flags defaults to resume mode.
+  Detach from a session with Ctrl+\ to leave it running in the background.
 
 Examples:
   claw-connect                    # Resume session (default)
@@ -111,23 +113,55 @@ get_session_cwd() {
   fi
 }
 
-# Check if a session exists on remote (reachable for reattach)
+# Check if a dtach session exists on remote (socket file present)
 session_exists_remote() {
   local session="$1"
   set +e
-  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux has-session -t '$session' 2>/dev/null"
+  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "test -S ${DTACH_SESSION_DIR}/${session}.sock" 2>/dev/null
   local result=$?
   set -e
   return $result
 }
 
-# Get session status from remote (attached/detached/exited)
-get_remote_session_status() {
-  local session="$1"
-  set +e
-  local output="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null | grep '^$session ' | awk '{print \$2}'")"
-  set -e
-  echo "${output:-}"
+# Ensure dtach is installed on remote (one-time, silent)
+ensure_dtach() {
+  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "which dtach >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq dtach)" 2>/dev/null
+}
+
+# Install bash hook for CWD saving (idempotent)
+install_cwd_hook() {
+  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "
+# Add shell hook to save CWD on exit (idempotent - check if already present)
+if ! grep -q '_claw_save_state' ~/.bashrc 2>/dev/null; then
+  cat >> ~/.bashrc << 'BASH_EOF'
+
+# Save CWD when shell exits (for claw-connect session tracking)
+_claw_save_state() {
+  if [[ -n \"\${CLAW_SESSION:-}\" ]]; then
+    mkdir -p ~/.config/claw-connect/cwd 2>/dev/null
+    echo \"\$PWD\" > \"\$HOME/.config/claw-connect/cwd/\${CLAW_SESSION}.cwd\" 2>/dev/null
+  fi
+}
+trap _claw_save_state EXIT
+BASH_EOF
+fi
+
+# Migrate old tmux-based hook to new CLAW_SESSION-based hook
+if grep -q 'tmux display-message' ~/.bashrc 2>/dev/null; then
+  sed -i '/# Save CWD when shell exits/,/^trap _claw_save_state EXIT$/c\\
+# Save CWD when shell exits (for claw-connect session tracking)\\
+_claw_save_state() {\\
+  if [[ -n \"\${CLAW_SESSION:-}\" ]]; then\\
+    mkdir -p ~/.config/claw-connect/cwd 2>/dev/null\\
+    echo \"\$PWD\" > \"\$HOME/.config/claw-connect/cwd/\${CLAW_SESSION}.cwd\" 2>/dev/null\\
+  fi\\
+}\\
+trap _claw_save_state EXIT' ~/.bashrc
+fi
+
+# Ensure session directory exists
+mkdir -p ${DTACH_SESSION_DIR}
+" 2>/dev/null
 }
 
 run_setup() {
@@ -293,8 +327,8 @@ clean_sessions() {
         -o "ConnectTimeout=5"
       )
 
-      # Check if session exists on remote
-      if ! ssh "${clean_ssh_opts[@]}" "$SSH_USER@$IP" "tmux has-session -t '$session_name' 2>/dev/null" 2>/dev/null; then
+      # Check if dtach session socket exists on remote
+      if ! ssh "${clean_ssh_opts[@]}" "$SSH_USER@$IP" "test -S ${DTACH_SESSION_DIR}/${session_name}.sock" 2>/dev/null; then
         echo "  Removing: $profile_name / $session_name (session no longer exists on remote)"
         rm -f "$state_file"
         ((removed++))
@@ -310,7 +344,6 @@ TUNNEL_MODE=false
 VNC_MODE=false
 RESUME_MODE=false
 LIST_MODE=false
-INIT_TMUX=false
 SETUP_MODE=false
 PROFILES_MODE=false
 SESSIONS_MODE=false
@@ -348,7 +381,6 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --update) echo "Updating claw-connect..."; git -C "$SCRIPT_DIR" pull --ff-only && echo "Updated to $(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null || git -C "$SCRIPT_DIR" rev-parse --short HEAD)"; exit 0 ;;
-    --init-tmux) INIT_TMUX=true; shift ;;
     --version) echo "claw-connect $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -406,55 +438,54 @@ SSH_OPTS=(
 )
 
 if [[ "$LIST_MODE" == true ]]; then
-  echo "Listing remote tmux sessions on $SSH_USER@$IP..."
+  echo "Listing remote sessions on $SSH_USER@$IP..."
   echo ""
-  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux ls 2>/dev/null || echo 'No active tmux sessions found'"
+  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "
+    session_dir='${DTACH_SESSION_DIR}'
+    if [[ ! -d \"\$session_dir\" ]] || ! ls \"\$session_dir\"/*.sock &>/dev/null 2>&1; then
+      echo 'No active sessions found'
+      exit 0
+    fi
+    for sock in \"\$session_dir\"/*.sock; do
+      name=\"\$(basename \"\$sock\" .sock)\"
+      if [[ -S \"\$sock\" ]]; then
+        # Check if the process behind the socket is still alive
+        if dtach -a \"\$sock\" -e '' -z /bin/true 2>/dev/null; then
+          status='active'
+        else
+          status='stale (socket exists but process dead)'
+        fi
+      else
+        status='stale (not a socket)'
+      fi
+      cwd=''
+      if [[ -f ~/.config/claw-connect/cwd/\${name}.cwd ]]; then
+        cwd=\" (cwd: \$(cat ~/.config/claw-connect/cwd/\${name}.cwd))\"
+      fi
+      echo \"  \$name: \$status\$cwd\"
+    done
+  "
   exit 0
 fi
 
 if [[ -n "$KILL_SESSION" ]]; then
-  echo "Killing tmux session '$KILL_SESSION' on $SSH_USER@$IP..."
-  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux kill-session -t '$KILL_SESSION' 2>/dev/null && echo 'Session killed successfully' || echo 'Error: Session not found or could not be killed'"
-  exit 0
-fi
-
-# Install tmux config silently (called automatically on connect)
-install_tmux_config() {
-  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat > ~/.tmux.conf << 'TMUX_EOF'
-set -g default-terminal \"xterm-256color\"
-set -g escape-time 0
-set -g history-limit 50000
-set -g mouse on
-set -g set-clipboard on
-set -g allow-passthrough on
-set-option -g remain-on-exit off
-TMUX_EOF
-
-# Add shell hook to save CWD on exit (idempotent - check if already present)
-if ! grep -q '_claw_save_state' ~/.bashrc 2>/dev/null; then
-  cat >> ~/.bashrc << 'BASH_EOF'
-
-# Save CWD when shell exits (for claw-connect session tracking)
-_claw_save_state() {
-  local session=\"\$(tmux display-message -p '#S' 2>/dev/null)\"
-  if [[ -n \"\$session\" ]]; then
-    mkdir -p ~/.config/claw-connect/cwd 2>/dev/null
-    echo \"\$PWD\" > \"\$HOME/.config/claw-connect/cwd/\${session}.cwd\" 2>/dev/null
-  fi
-}
-trap _claw_save_state EXIT
-BASH_EOF
-fi
-" 2>/dev/null
-}
-
-if [[ "$INIT_TMUX" == true ]]; then
-  echo "Installing optimized tmux config on $SSH_USER@$IP..."
-  install_tmux_config
-  echo 'Tmux config installed successfully.'
-  echo '  - No dead panes on exit (clean session close)'
-  echo '  - CWD saved on exit, restored on reconnect'
-  echo '  - Prefix key: Ctrl+a (avoids conflicts with local tmux)'
+  echo "Killing session '$KILL_SESSION' on $SSH_USER@$IP..."
+  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "
+    sock='${DTACH_SESSION_DIR}/${KILL_SESSION}.sock'
+    if [[ -S \"\$sock\" ]]; then
+      # Find and kill the process group behind the dtach socket
+      pid=\$(lsof -t \"\$sock\" 2>/dev/null | head -1)
+      if [[ -n \"\$pid\" ]]; then
+        # Kill the entire process tree rooted at dtach
+        pkill -TERM -P \"\$pid\" 2>/dev/null || true
+        kill \"\$pid\" 2>/dev/null || true
+      fi
+      rm -f \"\$sock\"
+      echo 'Session killed successfully'
+    else
+      echo 'Error: Session not found or already dead'
+    fi
+  "
   exit 0
 fi
 
@@ -544,12 +575,11 @@ fi
 # Handle session tracking on script exit
 cleanup_and_save_state() {
   if [[ "$RESUME_MODE" == true && -n "$SESSION_NAME" ]]; then
-    # Check if session still exists and is attachable
     set +e
     if session_exists_remote "$SESSION_NAME" 2>/dev/null; then
       # Session still exists - we detached normally
-      # Try to get the current working directory
-      local cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux display-message -p -t '$SESSION_NAME' '#{pane_current_path}' 2>/dev/null" || echo "")"
+      # Get the CWD from remote cwd file (saved by bash EXIT hook)
+      local cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat ~/.config/claw-connect/cwd/${SESSION_NAME}.cwd 2>/dev/null" || echo "")"
       if [[ -n "$cwd" ]]; then
         save_session_state "$PROFILE" "$SESSION_NAME" "detached" "$cwd"
       else
@@ -557,7 +587,6 @@ cleanup_and_save_state() {
       fi
     else
       # Session no longer exists - it was killed or the shell exited
-      # Get the last known cwd from state file
       local prev_state="$(get_session_state "$PROFILE" "$SESSION_NAME")"
       local saved_cwd="$(echo "$prev_state" | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4)"
       if [[ -n "$saved_cwd" ]]; then
@@ -586,30 +615,12 @@ save_session_cwd() {
   fi
 }
 
-# Check if pane is dead and respawn it with a new shell
-respawn_dead_pane() {
-  local session="$1"
-  local cwd="$2"
-  # Check if the pane is dead (exit status != empty)
-  local pane_dead="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux display-message -p -t '$session' '#{pane_dead}' 2>/dev/null")"
-  if [[ "$pane_dead" == "1" ]]; then
-    echo "  Pane was dead, respawning shell..."
-    # Detach any clients first (respawn may fail if attached)
-    ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux detach -t '$session' 2>/dev/null" || true
-    sleep 0.2
-    if [[ -n "$cwd" ]]; then
-      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux respawn-pane -t '$session' -c '$cwd' 'exec bash -l' 2>/dev/null" || true
-    else
-      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux respawn-pane -t '$session' 'exec bash -l' 2>/dev/null" || true
-    fi
-  fi
-}
-
 # Resume session with tracking and reconnection logic
 do_resume_session() {
   set +e
-  # Auto-install tmux config on first connect (silent, idempotent)
-  install_tmux_config
+  # Ensure dtach is installed and CWD hook is present
+  ensure_dtach
+  install_cwd_hook
 
   local prev_state="$(get_session_state "$PROFILE" "$SESSION_NAME")"
   local last_state="unknown"
@@ -626,6 +637,8 @@ do_resume_session() {
     saved_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat ~/.config/claw-connect/cwd/${SESSION_NAME}.cwd 2>/dev/null" || echo "")"
   fi
 
+  local sock="${DTACH_SESSION_DIR}/${SESSION_NAME}.sock"
+
   # Check if session exists on remote
   set +e
   local session_exists=false
@@ -634,41 +647,28 @@ do_resume_session() {
   fi
 
   if [[ "$session_exists" == true ]]; then
-    local remote_status="$(get_remote_session_status "$SESSION_NAME")"
-    if [[ -n "$remote_status" && "$remote_status" -gt 0 ]]; then
-      echo "Session '$SESSION_NAME' has $remote_status client(s) attached."
-      echo "Detaching other clients and attaching..."
-    else
-      echo "Session '$SESSION_NAME' exists and is reachable (detached)."
-      if [[ "$last_state" == "exited" ]]; then
-        echo "  (Previously marked as exited at $last_seen - session was recovered)"
-      fi
-    fi
-    echo "Attaching to tmux session '$SESSION_NAME'..."
-    # Check if pane is dead and respawn it BEFORE attaching
-    respawn_dead_pane "$SESSION_NAME" "$saved_cwd"
-    # Use -d to detach other clients (prevents nested tmux issues)
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=xterm-256color tmux -u attach -d -t '$SESSION_NAME'"
+    echo "Session '$SESSION_NAME' exists, reattaching..."
+    save_session_state "$PROFILE" "$SESSION_NAME" "attached"
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "dtach -a '${sock}' -z"
   else
-    # Session doesn't exist - create it (clean exit or first time)
+    # Session doesn't exist - create it
     if [[ -n "$prev_state" ]]; then
       echo "Session '$SESSION_NAME' was last seen as '$last_state' at $last_seen"
       if [[ -n "$saved_cwd" ]]; then
         echo "  Restoring working directory: $saved_cwd"
       fi
     fi
-    echo "Creating new tmux session '$SESSION_NAME'..."
+    echo "Creating new session '$SESSION_NAME'..."
+    save_session_state "$PROFILE" "$SESSION_NAME" "attached"
     if [[ -n "$saved_cwd" ]]; then
-      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=xterm-256color tmux -u new-session -d -s '$SESSION_NAME' -c '$saved_cwd' -n bash 'exec bash -l'"
+      ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "cd '$saved_cwd' 2>/dev/null; CLAW_SESSION='$SESSION_NAME' dtach -A '${sock}' -z bash -l"
     else
-      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=xterm-256color tmux -u new-session -d -s '$SESSION_NAME' -n bash 'exec bash -l'"
+      ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "CLAW_SESSION='$SESSION_NAME' dtach -A '${sock}' -z bash -l"
     fi
-    # Now attach to the newly created session
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=xterm-256color tmux -u attach -d -t '$SESSION_NAME'"
   fi
 
-  # Save cwd after detach
-  local current_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "tmux display-message -p -t '$SESSION_NAME' '#{pane_current_path}' 2>/dev/null" || echo "")"
+  # After detach/disconnect, save state
+  local current_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat ~/.config/claw-connect/cwd/${SESSION_NAME}.cwd 2>/dev/null" || echo "")"
   if [[ -n "$current_cwd" ]]; then
     save_session_cwd "$PROFILE" "$SESSION_NAME" "$current_cwd"
     save_session_state "$PROFILE" "$SESSION_NAME" "detached" "$current_cwd"
@@ -680,7 +680,7 @@ do_resume_session() {
 
 echo "Connecting to $SSH_USER@$IP..."
 # Default to resume mode if no explicit mode specified
-if [[ "$TUNNEL_MODE" == false && "$VNC_MODE" == false && "$RESUME_MODE" == false && "$LIST_MODE" == false && "$INIT_TMUX" == false && -z "$SPECIFIC_SESSION" ]]; then
+if [[ "$TUNNEL_MODE" == false && "$VNC_MODE" == false && "$RESUME_MODE" == false && "$LIST_MODE" == false && -z "$SPECIFIC_SESSION" ]]; then
   RESUME_MODE=true
 fi
 
