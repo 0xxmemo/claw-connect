@@ -421,27 +421,53 @@ fi
 # Install tmux config silently (called automatically on connect)
 install_tmux_config() {
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat > ~/.tmux.conf << 'TMUX_EOF'
-set -sg escape-time 10
-set -g history-limit 50000
-set -g mouse on
+# --- Terminal ---
+# screen-256color is the most compatible default-terminal across devices
 set -g default-terminal \"screen-256color\"
+# Enable true color for terminals that support it
+set -ga terminal-overrides \",xterm-256color:RGB\"
+set -ga terminal-overrides \",*256col*:Tc\"
+
+# --- General ---
+set -sg escape-time 0
+set -g history-limit 50000
+set -g display-time 4000
 set -g status-interval 5
 set -g base-index 1
 setw -g pane-base-index 1
 set -g renumber-windows on
 set -g focus-events on
-set -s escape-time 0
+
+# --- Mouse ---
+set -g mouse on
+
+# --- Clipboard (OSC 52 — works over SSH on iTerm2, kitty, alacritty, WezTerm, Windows Terminal) ---
 set -g set-clipboard on
-set -g status-style bg=black,fg=white
-set -g status-left-length 40
-set -g status-left \"#[fg=green]Session: #S #[fg=yellow]#I #[fg=cyan]#P\"
-set -g status-right \"#[fg=cyan]%d %b %R\"
+set -ga terminal-overrides \",xterm*:Ms=\\\\E]52;c;%p2%s\\\\7\"
+set -ga terminal-overrides \",screen*:Ms=\\\\E]52;c;%p2%s\\\\7\"
+
+# --- Copy mode (vi) ---
+setw -g mode-keys vi
+bind-key -T copy-mode-vi v send-keys -X begin-selection
+bind-key -T copy-mode-vi C-v send-keys -X rectangle-toggle
+bind-key -T copy-mode-vi y send-keys -X copy-selection-and-cancel
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel
+# Scroll up enters copy mode
+bind-key -T root WheelUpPane if-shell -F -t = \"#{alternate_on}\" \"send-keys -M\" \"select-pane -t =; copy-mode -e; send-keys -M\"
+
+# --- Pane navigation ---
 bind h select-pane -L
 bind j select-pane -D
 bind k select-pane -U
 bind l select-pane -R
 
-# Don't keep dead panes - session ends cleanly on exit
+# --- Status bar ---
+set -g status-style bg=black,fg=white
+set -g status-left-length 40
+set -g status-left \"#[fg=green]#S #[fg=yellow]#I #[fg=cyan]#P\"
+set -g status-right \"#[fg=cyan]%d %b %R\"
+
+# --- Session behavior ---
 set-option -g remain-on-exit off
 TMUX_EOF
 
@@ -486,10 +512,16 @@ if [[ "$VNC_MODE" == true ]]; then
 fi
 
 if [[ "$TUNNEL_MODE" == true ]]; then
-  # Kill any existing SSH tunnels on port 18789
+  # Kill only existing SSH tunnel processes on port 18789 (not other claw-connect sessions)
+  # Match only 'ssh -N' (tunnel-only) processes bound to port 18789
   existing_pids="$(lsof -ti :18789 -sTCP:LISTEN 2>/dev/null || true)"
   if [[ -n "$existing_pids" ]]; then
-    echo "$existing_pids" | xargs kill 2>/dev/null || true
+    for pid in $existing_pids; do
+      # Only kill if the process is an ssh tunnel (ssh -N), not a regular session
+      if ps -p "$pid" -o args= 2>/dev/null | grep -q 'ssh.*-N.*-L.*18789'; then
+        kill "$pid" 2>/dev/null || true
+      fi
+    done
     sleep 0.5
   fi
 
@@ -657,7 +689,7 @@ do_resume_session() {
     # Check if pane is dead and respawn it BEFORE attaching
     respawn_dead_pane "$SESSION_NAME" "$saved_cwd"
     # Use -d to detach other clients (prevents nested tmux issues)
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -d -t '$SESSION_NAME'"
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=xterm-256color tmux -u attach -d -t '$SESSION_NAME'"
   else
     # Session doesn't exist - create it (clean exit or first time)
     if [[ -n "$prev_state" ]]; then
@@ -668,12 +700,12 @@ do_resume_session() {
     fi
     echo "Creating new tmux session '$SESSION_NAME'..."
     if [[ -n "$saved_cwd" ]]; then
-      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -d -s '$SESSION_NAME' -c '$saved_cwd' -n bash 'exec bash -l'"
+      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=xterm-256color tmux -u new-session -d -s '$SESSION_NAME' -c '$saved_cwd' -n bash 'exec bash -l'"
     else
-      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=screen-256color tmux -u new-session -d -s '$SESSION_NAME' -n bash 'exec bash -l'"
+      ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "TERM=xterm-256color tmux -u new-session -d -s '$SESSION_NAME' -n bash 'exec bash -l'"
     fi
     # Now attach to the newly created session
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=screen-256color tmux -u attach -d -t '$SESSION_NAME'"
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "TERM=xterm-256color tmux -u attach -d -t '$SESSION_NAME'"
   fi
 
   # Save cwd after detach
