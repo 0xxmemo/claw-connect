@@ -422,10 +422,7 @@ fi
 install_tmux_config() {
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat > ~/.tmux.conf << 'TMUX_EOF'
 # --- Terminal ---
-# screen-256color is the most compatible default-terminal across devices
 set -g default-terminal \"screen-256color\"
-# Enable true color for terminals that support it
-set -ga terminal-overrides \",xterm-256color:RGB\"
 set -ga terminal-overrides \",*256col*:Tc\"
 
 # --- General ---
@@ -438,22 +435,8 @@ setw -g pane-base-index 1
 set -g renumber-windows on
 set -g focus-events on
 
-# --- Mouse ---
-set -g mouse on
-
-# --- Clipboard (OSC 52 — works over SSH on iTerm2, kitty, alacritty, WezTerm, Windows Terminal) ---
-set -g set-clipboard on
-set -ga terminal-overrides \",xterm*:Ms=\\\\E]52;c;%p2%s\\\\7\"
-set -ga terminal-overrides \",screen*:Ms=\\\\E]52;c;%p2%s\\\\7\"
-
-# --- Copy mode (vi) ---
-setw -g mode-keys vi
-bind-key -T copy-mode-vi v send-keys -X begin-selection
-bind-key -T copy-mode-vi C-v send-keys -X rectangle-toggle
-bind-key -T copy-mode-vi y send-keys -X copy-selection-and-cancel
-bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel
-# Scroll up enters copy mode
-bind-key -T root WheelUpPane if-shell -F -t = \"#{alternate_on}\" \"send-keys -M\" \"select-pane -t =; copy-mode -e; send-keys -M\"
+# --- Mouse off: native terminal select + Cmd+C works like regular SSH ---
+set -g mouse off
 
 # --- Pane navigation ---
 bind h select-pane -L
