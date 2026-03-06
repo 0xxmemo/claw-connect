@@ -441,7 +441,7 @@ if [[ "$LIST_MODE" == true ]]; then
   echo "Listing remote sessions on $SSH_USER@$IP..."
   echo ""
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "
-    session_dir='${DTACH_SESSION_DIR}'
+    session_dir=${DTACH_SESSION_DIR}
     if [[ ! -d \"\$session_dir\" ]] || ! ls \"\$session_dir\"/*.sock &>/dev/null 2>&1; then
       echo 'No active sessions found'
       exit 0
@@ -471,7 +471,7 @@ fi
 if [[ -n "$KILL_SESSION" ]]; then
   echo "Killing session '$KILL_SESSION' on $SSH_USER@$IP..."
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "
-    sock='${DTACH_SESSION_DIR}/${KILL_SESSION}.sock'
+    sock=${DTACH_SESSION_DIR}/${KILL_SESSION}.sock
     if [[ -S \"\$sock\" ]]; then
       # Find and kill the process group behind the dtach socket
       pid=\$(lsof -t \"\$sock\" 2>/dev/null | head -1)
@@ -649,7 +649,7 @@ do_resume_session() {
   if [[ "$session_exists" == true ]]; then
     echo "Session '$SESSION_NAME' exists, reattaching..."
     save_session_state "$PROFILE" "$SESSION_NAME" "attached"
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "dtach -a '${sock}' -z"
+    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "dtach -a ${sock} -z"
   else
     # Session doesn't exist - create it
     if [[ -n "$prev_state" ]]; then
@@ -661,9 +661,9 @@ do_resume_session() {
     echo "Creating new session '$SESSION_NAME'..."
     save_session_state "$PROFILE" "$SESSION_NAME" "attached"
     if [[ -n "$saved_cwd" ]]; then
-      ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "cd '$saved_cwd' 2>/dev/null; CLAW_SESSION='$SESSION_NAME' dtach -A '${sock}' -z bash -l"
+      ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "cd '$saved_cwd' 2>/dev/null; CLAW_SESSION='$SESSION_NAME' dtach -A ${sock} -z bash -l"
     else
-      ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "CLAW_SESSION='$SESSION_NAME' dtach -A '${sock}' -z bash -l"
+      ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "CLAW_SESSION='$SESSION_NAME' dtach -A ${sock} -z bash -l"
     fi
   fi
 
