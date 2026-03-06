@@ -421,11 +421,12 @@ fi
 # Install tmux config silently (called automatically on connect)
 install_tmux_config() {
   ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat > ~/.tmux.conf << 'TMUX_EOF'
-# Minimal config — behave like a normal terminal, only add session persistence
-set -g default-terminal \"\$TERM\"
+set -g default-terminal \"xterm-256color\"
 set -g escape-time 0
 set -g history-limit 50000
-set -g mouse off
+set -g mouse on
+set -g set-clipboard on
+set -g allow-passthrough on
 set-option -g remain-on-exit off
 TMUX_EOF
 
