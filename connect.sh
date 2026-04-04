@@ -125,12 +125,12 @@ session_exists_remote() {
 
 # Ensure dtach is installed on remote (one-time, silent)
 ensure_dtach() {
-  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "which dtach >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq dtach)" 2>/dev/null
+  ssh "${SSH_QUICK_OPTS[@]}" "$SSH_USER@$IP" "which dtach >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq dtach)" 2>/dev/null
 }
 
 # Install bash hook for CWD saving (idempotent)
 install_cwd_hook() {
-  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "
+  ssh "${SSH_QUICK_OPTS[@]}" "$SSH_USER@$IP" "
 # Add shell hook to save CWD on exit (idempotent - check if already present)
 if ! grep -q '_claw_save_state' ~/.bashrc 2>/dev/null; then
   cat >> ~/.bashrc << 'BASH_EOF'
@@ -437,6 +437,33 @@ SSH_OPTS=(
   -o "ControlPersist=10m"
 )
 
+# Dedicated TCP connection (no ControlMaster). Use for interactive dtach sessions
+# and recovery paths so a wedged multiplexer or half-dead tty session cannot block
+# every later ssh to this host (which users fixed ad hoc via claw-connect -k).
+SSH_QUICK_OPTS=(
+  -i "$PEM_FILE"
+  -o "StrictHostKeyChecking=no"
+  -o "UserKnownHostsFile=/dev/null"
+  -o "LogLevel=ERROR"
+  -o "ServerAliveInterval=30"
+  -o "ServerAliveCountMax=3"
+  -o "ConnectTimeout=10"
+  -o "TCPKeepAlive=yes"
+  -C
+  -o "ControlMaster=no"
+  -o "ControlPath=none"
+)
+
+# Like session_exists_remote but avoids ControlMaster (see SSH_QUICK_OPTS comment).
+session_exists_remote_quick() {
+  local session="$1"
+  set +e
+  ssh "${SSH_QUICK_OPTS[@]}" "$SSH_USER@$IP" "test -S ${DTACH_SESSION_DIR}/${session}.sock" 2>/dev/null
+  local result=$?
+  set -e
+  return $result
+}
+
 if [[ "$LIST_MODE" == true ]]; then
   echo "Listing remote sessions on $SSH_USER@$IP..."
   echo ""
@@ -470,7 +497,7 @@ fi
 
 if [[ -n "$KILL_SESSION" ]]; then
   echo "Killing session '$KILL_SESSION' on $SSH_USER@$IP..."
-  ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "
+  ssh "${SSH_QUICK_OPTS[@]}" "$SSH_USER@$IP" "
     sock=${DTACH_SESSION_DIR}/${KILL_SESSION}.sock
     if [[ -S \"\$sock\" ]]; then
       # Find and kill the process group behind the dtach socket
@@ -576,10 +603,10 @@ fi
 cleanup_and_save_state() {
   if [[ "$RESUME_MODE" == true && -n "$SESSION_NAME" ]]; then
     set +e
-    if session_exists_remote "$SESSION_NAME" 2>/dev/null; then
+    if session_exists_remote_quick "$SESSION_NAME" 2>/dev/null; then
       # Session still exists - we detached normally
       # Get the CWD from remote cwd file (saved by bash EXIT hook)
-      local cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat ~/.config/claw-connect/cwd/${SESSION_NAME}.cwd 2>/dev/null" || echo "")"
+      local cwd="$(ssh "${SSH_QUICK_OPTS[@]}" "$SSH_USER@$IP" "cat ~/.config/claw-connect/cwd/${SESSION_NAME}.cwd 2>/dev/null" || echo "")"
       if [[ -n "$cwd" ]]; then
         save_session_state "$PROFILE" "$SESSION_NAME" "detached" "$cwd"
       else
@@ -634,7 +661,7 @@ do_resume_session() {
   fi
   # Fallback: check remote cwd file (from bash EXIT hook)
   if [[ -z "$saved_cwd" ]]; then
-    saved_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat ~/.config/claw-connect/cwd/${SESSION_NAME}.cwd 2>/dev/null" || echo "")"
+    saved_cwd="$(ssh "${SSH_QUICK_OPTS[@]}" "$SSH_USER@$IP" "cat ~/.config/claw-connect/cwd/${SESSION_NAME}.cwd 2>/dev/null" || echo "")"
   fi
 
   local sock="${DTACH_SESSION_DIR}/${SESSION_NAME}.sock"
@@ -642,14 +669,14 @@ do_resume_session() {
   # Check if session exists on remote
   set +e
   local session_exists=false
-  if session_exists_remote "$SESSION_NAME" 2>/dev/null; then
+  if session_exists_remote_quick "$SESSION_NAME" 2>/dev/null; then
     session_exists=true
   fi
 
   if [[ "$session_exists" == true ]]; then
     echo "Session '$SESSION_NAME' exists, reattaching..."
     save_session_state "$PROFILE" "$SESSION_NAME" "attached"
-    ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "dtach -a ${sock} -z"
+    ssh "${SSH_QUICK_OPTS[@]}" -t "$SSH_USER@$IP" "dtach -a ${sock} -z"
   else
     # Session doesn't exist - create it
     if [[ -n "$prev_state" ]]; then
@@ -661,14 +688,14 @@ do_resume_session() {
     echo "Creating new session '$SESSION_NAME'..."
     save_session_state "$PROFILE" "$SESSION_NAME" "attached"
     if [[ -n "$saved_cwd" ]]; then
-      ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "cd '$saved_cwd' 2>/dev/null; CLAW_SESSION='$SESSION_NAME' dtach -A ${sock} -z bash -l"
+      ssh "${SSH_QUICK_OPTS[@]}" -t "$SSH_USER@$IP" "cd '$saved_cwd' 2>/dev/null; CLAW_SESSION='$SESSION_NAME' dtach -A ${sock} -z bash -l"
     else
-      ssh "${SSH_OPTS[@]}" -t "$SSH_USER@$IP" "CLAW_SESSION='$SESSION_NAME' dtach -A ${sock} -z bash -l"
+      ssh "${SSH_QUICK_OPTS[@]}" -t "$SSH_USER@$IP" "CLAW_SESSION='$SESSION_NAME' dtach -A ${sock} -z bash -l"
     fi
   fi
 
   # After detach/disconnect, save state
-  local current_cwd="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$IP" "cat ~/.config/claw-connect/cwd/${SESSION_NAME}.cwd 2>/dev/null" || echo "")"
+  local current_cwd="$(ssh "${SSH_QUICK_OPTS[@]}" "$SSH_USER@$IP" "cat ~/.config/claw-connect/cwd/${SESSION_NAME}.cwd 2>/dev/null" || echo "")"
   if [[ -n "$current_cwd" ]]; then
     save_session_cwd "$PROFILE" "$SESSION_NAME" "$current_cwd"
     save_session_state "$PROFILE" "$SESSION_NAME" "detached" "$current_cwd"
